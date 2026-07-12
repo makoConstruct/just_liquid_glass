@@ -1,0 +1,26 @@
+name: just_liquid_glass
+description: "Liquid glass for Flutter: SDF-merged blobby glass shapes with refraction, blur and shine, plus a flat fallback that runs on every backend."
+version: 0.0.1
+homepage: https://github.com/makoConstruct/just_liquid_glass
+repository: https://github.com/makoConstruct/just_liquid_glass
+
+environment:
+  sdk: ^3.12.0
+  # 3.41 carries the flutter#177687 fix that makes composing ImageFilter.blur
+  # with ImageFilter.shader coordinate-stable (flutter#170820).
+  flutter: ">=3.41.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sensors_plus: ^7.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  shaders:
+    - shaders/glass.frag
+    - shaders/flat.frag
