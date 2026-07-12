@@ -1,4 +1,4 @@
-# 0.0.1
+# 0.1.0
 
 - Initial release: `GlassLayer` with SDF smooth-min merged `GlassBlob`s
   (rotation, elliptical half-extents, corner rounding, annular holes, angular

@@ -21,7 +21,7 @@ Features that differentiate just_liquid_glass from flutter_liquid_glass:
 
 Flaws:
 
-- No chromatic aberation. (it can probably be added with one prompt, mako just didn't want it (it's not actually good!), but would accept it, even as the default setting, if someone else wants to add it)
+- No chromatic aberration. (it could probably be done in just one prompt, mako just didn't want it (it's not actually good!), but would accept it, even as the default setting, if someone else wants to add it)
 
 - Corner shape is just circular, not apple's continuous shape. We'll probably address this soon.
 

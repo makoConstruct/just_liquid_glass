@@ -1,6 +1,7 @@
 name: just_liquid_glass
-description: "Liquid glass for Flutter: SDF-merged blobby glass shapes with refraction, blur and shine, plus a flat fallback that runs on every backend."
-version: 0.0.1
+description: "liquid glass for flutter with fewer bugs and support for a wider variety of sdf shapes"
+version: 0.1.0
+license: MIT
 homepage: https://github.com/makoConstruct/just_liquid_glass
 repository: https://github.com/makoConstruct/just_liquid_glass
 
