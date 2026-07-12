@@ -1,5 +1,12 @@
 # just_liquid_glass example
 
+The platform folders (`android/`, `ios/`, etc.) aren't committed — regenerate
+them once after cloning, then run as usual:
+
+```sh
+flutter create .
+```
+
 Two entrypoints:
 
 - `lib/main.dart` — interactive demo: animated blobs over a scrollable
