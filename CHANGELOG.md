@@ -1,3 +1,9 @@
+# 0.2.0
+- Edge tint (`GlassOptions.edgeTint`, opt-in — default transparent): a color
+  spread across the bevel band, deepening toward the silhouette like the
+  absorption of real tinted glass; keeps the outline legible over
+  same-colored backdrops (white on white).
+
 # 0.1.0
 
 - Initial release: `GlassLayer` with SDF smooth-min merged `GlassBlob`s

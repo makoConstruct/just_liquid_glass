@@ -75,9 +75,17 @@ void main() {
       shader.setFloat(6, 26); // refractionIntensity
       shader.setFloat(7, 0); // uOrigin: canvas at the render-target origin
       shader.setFloat(8, 0);
+      shader.setFloat(9, 0); // uClip: whole canvas
+      shader.setFloat(10, 0);
+      shader.setFloat(11, width);
+      shader.setFloat(12, height);
+      shader.setFloat(13, 0); // uEdgeTint: black at default strength
+      shader.setFloat(14, 0);
+      shader.setFloat(15, 0);
+      shader.setFloat(16, 0.15);
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(9 + i, packed[i]);
+        shader.setFloat(17 + i, packed[i]);
       }
 
       final flatProgram =

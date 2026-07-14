@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show Color;
 
 /// How a [GlassLayer] renders its blobs.
 enum GlassMode {
@@ -23,6 +24,7 @@ class GlassOptions {
     this.refractionIntensity = 22,
     this.blurRadius = 17,
     this.blendRadius = 18,
+    this.edgeTint = const Color(0x00000000),
     this.mode = GlassMode.glass,
   });
 
@@ -58,6 +60,16 @@ class GlassOptions {
   /// in logical pixels. Larger values are blobbier.
   final double blendRadius;
 
+  /// Color layered over the blob tints across the bevel band, deepening
+  /// toward the silhouette the way real tinted glass darkens edge-on (the
+  /// view path through the slab gets longer). This is what keeps the
+  /// silhouette legible over a same-colored backdrop — white on white —
+  /// where refraction alone disappears; try black at ~15% alpha. Alpha
+  /// scales the strength, [bevelThickness] sets the band width, and the
+  /// transparent default disables it. Glass mode only ([GlassMode.flat]
+  /// relies on its fill tint for contrast instead).
+  final Color edgeTint;
+
   /// Which rendering path to use; see [GlassMode].
   final GlassMode mode;
 
@@ -71,6 +83,7 @@ class GlassOptions {
         other.refractionIntensity == refractionIntensity &&
         other.blurRadius == blurRadius &&
         other.blendRadius == blendRadius &&
+        other.edgeTint == edgeTint &&
         other.mode == mode;
   }
 
@@ -83,6 +96,7 @@ class GlassOptions {
     refractionIntensity,
     blurRadius,
     blendRadius,
+    edgeTint,
     mode,
   );
 }

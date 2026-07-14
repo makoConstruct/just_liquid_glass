@@ -6,9 +6,11 @@
 //               tint; the every-backend fallback look.
 //   uMode == 1: mask — pure coverage alpha, used with ShaderMask(dstIn) to
 //               clip the GlassLayer child to the blob silhouette.
-//   uMode == 2: shine — the rim highlights only, composited above the masked
-//               child in glass mode (premultiplied white; src-over acts as a
-//               screen-toward-white blend).
+//   uMode == 2: shine — the rim highlights only, drawn in glass mode above
+//               the masked child, OUTSIDE the mask (premultiplied white;
+//               src-over acts as a screen-toward-white blend). Its outer cut
+//               sits half a band outside the silhouette so it fully covers
+//               the glass edge's AA fringe.
 // Runs as an ordinary canvas shader, so it works on every backend
 // (Skia and Impeller) including web.
 //
@@ -152,21 +154,34 @@ void main() {
     if (uMode > 1.5) {
       // Shine: long thin highlight arcs hugging the rim, iOS-26 style.
       // Follows liquid_glass_renderer's render.glsl conventions: the band is
-      // a ~1.5px Lorentzian around d == 0 (radially hard-edged, independent
-      // of bevel width), while the angular lobes are broad — influence is
-      // dot(n, L) merely squared, with a counter-lobe opposite the light at
-      // 0.8x. The outer half of the band is cut by coverage, giving the
-      // crisp outer edge.
+      // a thin (~1px) Lorentzian near d == 0 (radially hard-edged,
+      // independent of bevel width), while the angular lobes are broad —
+      // influence is dot(n, L) merely squared, with an equal counter-lobe
+      // opposite the light (iOS lights the bottom edge as brightly as the
+      // top: light enters the top edge and exits the bottom one).
       vec2 n = g / max(gm, 1e-4);
       vec2 lightDir = vec2(cos(uShineDirection), -sin(uShineDirection));
       float influence = max(dot(n, lightDir), 0.0) +
-          0.8 * max(dot(n, -lightDir), 0.0);
-      float x = d / 1.5;
+          max(dot(n, -lightDir), 0.0);
+      // Half-Lorentzian with a flat top: full brightness from 0.6px inside
+      // the silhouette outward, decaying only inward. A symmetric band
+      // centered on d == 0 loses half its peak to the outer cut and reads
+      // washed out.
+      float x = min((d + 0.6) / 0.9, 0.0);
       float rimFactor = 1.0 / (1.0 + 0.89 * x * x);
+      // Outer cut shifted one half-band OUTWARD of the glass/mask coverage:
+      // this pass draws ABOVE the GlassLayer mask, and the highlight must
+      // fully cover the glass edge's own AA fringe. Any cut at or inside
+      // the glass coverage leaves fringe pixels where the (possibly dark)
+      // tinted glass shows with less shine than the peak — a jaggy dark
+      // hairline capping the shine on dark-tint-over-light scenes. Shifted
+      // outward, the line owns the outermost pixels and its own edge blends
+      // shine-over-backdrop with no dark component.
+      float covOut = 1.0 - smoothstep(-w, w, d - w);
       // slope (unnormalized |gradient|) still zeroes the shine on merge
       // necks — the pinch fix; see glass.frag.
       float s = clamp(1.4 * uShineIntensity * influence * influence *
-          rimFactor * slope, 0.0, 1.0) * coverage;
+          rimFactor * slope, 0.0, 1.0) * covOut;
       outCol = vec4(s); // premultiplied white
     } else if (uMode > 0.5) {
       outCol = vec4(coverage); // premultiplied white; dstIn uses the alpha

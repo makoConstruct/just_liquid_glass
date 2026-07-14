@@ -1,31 +1,40 @@
 
 # just_liquid_glass
 
-A form of liquid glass for Flutter: blobby, SDF-merged glass shapes with refraction, blur, tint and shine — plus a flat fallback mode that runs on every backend.
+A form of liquid glass for Flutter: blobby, SDF-merged glass shapes with refraction, blur, tint and shine, plus a flat fallback mode that runs on every backend.
 
 It's entirely vibecoded (Fable 5), but it's been tested and iterated and refined and used, and is probably very stable, given the defensive approach we took. Fable was instructed to learn from other flutter libraries and take an approach that dodges some of flutter's bugs, a standout decision resulting from that was to avoid using intermediate textures so animating blobs wouldn't churn GPU memory. The full list is in [Bugs dodged](#bugs-dodged) below.
 
 We do aspire to look like apple's implementation by default, we currently aren't there, but we're not far.
 
-Features that differentiate just_liquid_glass from flutter_liquid_glass:
+Improvements over flutter_liquid_glass:
 
-- It's possible to fade shine to 0, or to interpolate all the way to flatness
+- It's possible to fade shine to 0/to interpolate all the way to flatness
 
 - The blob shapes are quite flexible, they can each have corner radius, a hole, start and end angle, and different colors and opacities (when blobs touch, colors blend smoothly from one to the other).
 
-- Blobs can be animated out by shrinking (see "Animating a blob out" in `GlassBlob`'s docs) without crashing. `flutter_liquid_glass` throws when a shape's layout are zero ([whynotmake-it#149](https://github.com/whynotmake-it/flutter_liquid_glass/issues/149), open).
+- Blobs can be animated out by shrinking (see "Animating a blob out" in `GlassBlob`'s docs) without crashing. `flutter_liquid_glass` throws when a shape's layout goes to zero ([whynotmake-it#149](https://github.com/whynotmake-it/flutter_liquid_glass/issues/149), open).
 
 - Shapes can be rotated
 
 - The blobs of a layer implicitly form a clip mask on the child. This turns out to often be the right thing for animated entry and edge shaping.
 
-Flaws:
+Non-improvements:
 
-- No chromatic aberration. (it could probably be done in just one prompt, mako just didn't want it (it's not actually good!), but would accept it, even as the default setting, if someone else wants to add it)
+- Doesn't support arbitrary shapes, your shapes must compose from our round-capped segments of roundrect-toruses.
 
 - Corner shape is just circular, not apple's continuous shape. We'll probably address this soon.
 
-**Everything below this line was written by Fable. Seems okay though.**
+- Arbitrarily, the number of blobs supported per layer is currently 16.
+
+Flaws that anyone could fix instantly if they wanted to:
+
+- No chromatic aberration. (it could probably be done in just one prompt, mako just didn't want it (it's not actually good!), but would accept it, even as the default setting, if someone else wants to add it)
+
+- Our flat fallback doesn't support the blur. Fixing this would be easy. The reason it isn't in today is that mako kinda firmly recommends using fully opaque blobs on platforms that don't have full glass. Glass is a good way of adding an outline to an otherwise quite indistinct graphical effect. Without that, you probably shouldn't use transparent-blurred substances this much.
+
+
+**Everything below this line was written by Fable but has been reviewed.**
 
 ## Usage
 
@@ -37,6 +46,7 @@ GlassLayer(
     bevelThickness: 16,
     refractionIntensity: 24,
     shineIntensity: 0.4,
+    edgeTint: Color(0x26000000), // rim darkening; keeps white-on-white legible
   ),
   blobs: [
     // A circle.
@@ -69,8 +79,6 @@ GlassLayer(
 Call `GlassLayer.precache()` early (e.g. in `main`) if you want the first
 frame to include the glass; otherwise the layer renders its child alone
 until the shader programs finish loading.
-
-Arbitrarily, the number of blobs supported per layer is currently 16.
 
 ### Shape model
 
@@ -124,19 +132,6 @@ Each design decision below traces to a bug you can watch another project hitting
   zero size ([whynotmake-it#149](https://github.com/whynotmake-it/flutter_liquid_glass/issues/149), open).
   Here the blob field is evaluated analytically in the shader — animating
   blobs is just uniform updates, with nothing to allocate or dispose.
-- **Blur waits for the fixed engine instead of working around the broken
-  one.** Putting `ImageFilter.blur` and `ImageFilter.shader` in the same
-  backdrop filter used to shift the shader's coordinate system, because the
-  engine downsamples the blurred backdrop
-  ([flutter#170820](https://github.com/flutter/flutter/issues/170820));
-  `liquid_glass_renderer` cites that issue for its documented blur artifacts
-  when blending shapes. That bug was fixed in Flutter 3.41
-  ([flutter#177687](https://github.com/flutter/flutter/pull/177687)), so this
-  package pins `flutter: ">=3.41.0"` and composes the engine's downsampled
-  gaussian under the glass shader — a spiral-tap blur inside the shader (an
-  earlier iteration of this library) visibly undersamples once the radius
-  grows past ~20 logical pixels, while the engine blur is clean and O(1) at
-  any radius.
 - **The layer's origin is passed as a uniform every paint.**
   `FlutterFragCoord()` is anchored to the render target, not the filtered
   layer, so a glass layer that moves within the target evaluates its field

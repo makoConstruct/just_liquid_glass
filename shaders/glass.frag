@@ -62,7 +62,12 @@ uniform vec2 uOrigin;          // 7, 8
 // this rect.
 uniform vec4 uClip;            // 9..12
 
-// 4 vec4 per blob, up to 16 blobs (float indices 13..268):
+// Edge tint: a separate color layered over the base tint near the
+// silhouette, strongest at the rim (see the Beer-Lambert note in main).
+// Alpha scales the strength; fully transparent disables it.
+uniform vec4 uEdgeTint;        // 13..16
+
+// 4 vec4 per blob, up to 16 blobs (float indices 17..272):
 //   [0] center.x, center.y, cos(rotation), sin(rotation)
 //   [1] radii.x, radii.y, cornerRadius, holeRadius (<= 0 means no hole)
 //   [2] sectorAxis.x, sectorAxis.y, cos(halfAperture) (-2 = full circle),
@@ -226,6 +231,17 @@ void main() {
       vec4 bg = sampleBg((sp + uOrigin) * uDpr / uSize);
 
       vec3 col = mix(bg.rgb, tint.rgb, clamp(tint.a, 0.0, 1.0));
+
+      // Edge tint: deepens toward the silhouette like the absorption of
+      // real tinted glass — which is also what keeps the silhouette legible
+      // over a same-colored backdrop (white on white), where refraction
+      // alone vanishes. Weighted by the eased rim, NOT the refraction's
+      // diverging deflect curve: that one concentrates everything in the
+      // last couple of pixels, while `ease` spreads the tint evenly across
+      // the whole bevel band (bevelThickness is the width knob). `slope`
+      // fades it on merge necks like everything else.
+      col = mix(col, uEdgeTint.rgb,
+          clamp(uEdgeTint.a, 0.0, 1.0) * ease * slope);
 
       outCol = vec4(min(col, vec3(1.0)) * coverage, coverage);
     }

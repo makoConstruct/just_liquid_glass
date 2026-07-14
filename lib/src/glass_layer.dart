@@ -20,6 +20,8 @@ import 'shine_motion.dart';
 ///     fills instead.
 ///  2. [child], masked to the blob silhouette (its coverage, including the
 ///     smooth merge bridges), so it reads as content sitting on the glass.
+///  3. In [GlassMode.glass], the rim shine, drawn topmost and unmasked so
+///     the highlight fully covers the glass edge's AA fringe.
 ///
 /// [GlassMode.glass] picks the glass path when the backend supports it and
 /// falls back to flat otherwise, rather than throwing.
@@ -209,8 +211,12 @@ class _GlassLayerState extends State<GlassLayer> {
       // the *effective* clip — the region trimmed to the render target —
       // and that trim needs the layer's global position, final only at
       // paint time.
+      shader.setFloat(_glassEdgeTintStart, options.edgeTint.r);
+      shader.setFloat(_glassEdgeTintStart + 1, options.edgeTint.g);
+      shader.setFloat(_glassEdgeTintStart + 2, options.edgeTint.b);
+      shader.setFloat(_glassEdgeTintStart + 3, options.edgeTint.a);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(13 + i, packed[i]);
+        shader.setFloat(_glassBlobsStart + i, packed[i]);
       }
 
       final view = View.of(context);
@@ -287,17 +293,32 @@ class _GlassLayerState extends State<GlassLayer> {
       overlay = _flatPass(shader, packed, 0, dpr, bounds);
     }
 
-    // The rim shine draws above the child but inside the mask's save layer,
-    // so mask and shine cost a single compositing pass. Being drawn before
-    // the dstIn mask means the shine is scaled by coverage too, which only
-    // affects the ~1px AA fringe. Flat mode stays flat (no shine).
-    final Widget maskContent;
-    if (glass) {
-      maskContent = Stack(
-        fit: StackFit.passthrough,
-        alignment: Alignment.topLeft,
-        children: [
-          widget.child,
+    final maskedChild = ShaderMask(
+      blendMode: BlendMode.dstIn,
+      shaderCallback: (maskBounds) {
+        final shader = _maskShader ??= _GlassPrograms.flat!.fragmentShader();
+        _setFlatUniforms(shader, packed, 1, dpr);
+        return shader;
+      },
+      child: widget.child,
+    );
+
+    return Stack(
+      fit: StackFit.passthrough,
+      // Non-directional alignment: works without a Directionality ancestor
+      // (it is irrelevant here, the overlay is Positioned.fill).
+      alignment: Alignment.topLeft,
+      children: [
+        Positioned.fill(child: IgnorePointer(child: overlay)),
+        maskedChild,
+        // The rim shine draws topmost, OUTSIDE the mask's dstIn save layer:
+        // inside it, the mask caps the shine's alpha at the same coverage
+        // that draws the tinted glass edge, so the AA fringe can never be
+        // fully covered — a jaggy dark hairline capped the shine on
+        // dark-tint-over-light scenes. The shine shader cuts its own outer
+        // edge half a band outside the silhouette instead, fully covering
+        // the glass fringe. Flat mode stays flat (no shine).
+        if (glass)
           Positioned.fill(
             child: IgnorePointer(
               child: _flatPass(
@@ -312,30 +333,6 @@ class _GlassLayerState extends State<GlassLayer> {
                       _motionRetained ? ShineMotion.instance.tilt : null),
             ),
           ),
-        ],
-      );
-    } else {
-      maskContent = widget.child;
-    }
-
-    final maskedChild = ShaderMask(
-      blendMode: BlendMode.dstIn,
-      shaderCallback: (maskBounds) {
-        final shader = _maskShader ??= _GlassPrograms.flat!.fragmentShader();
-        _setFlatUniforms(shader, packed, 1, dpr);
-        return shader;
-      },
-      child: maskContent,
-    );
-
-    return Stack(
-      fit: StackFit.passthrough,
-      // Non-directional alignment: works without a Directionality ancestor
-      // (it is irrelevant here, the overlay is Positioned.fill).
-      alignment: Alignment.topLeft,
-      children: [
-        Positioned.fill(child: IgnorePointer(child: overlay)),
-        maskedChild,
       ],
     );
   }
@@ -345,6 +342,8 @@ class _GlassLayerState extends State<GlassLayer> {
 const int _glassOriginX = 7;
 const int _glassOriginY = 8;
 const int _glassClipStart = 9; // 9..12: LTRB, GlassLayer-local logical px
+const int _glassEdgeTintStart = 13; // 13..16: uEdgeTint rgba
+const int _glassBlobsStart = 17;
 
 /// A [BackdropFilter] variant that anchors the glass shader to this widget.
 ///

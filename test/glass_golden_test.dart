@@ -82,6 +82,9 @@ void main() {
         bevelThickness: 18,
         refractionIntensity: 30,
         blurRadius: 6,
+        // Explicit: the default is transparent, and the golden must keep the
+        // edge-tint path exercised.
+        edgeTint: ui.Color(0x26000000),
       );
       final blobs = [
         const GlassBlob(
@@ -118,14 +121,19 @@ void main() {
       shader.setFloat(10, 0);
       shader.setFloat(11, width);
       shader.setFloat(12, height);
+      shader.setFloat(13, options.edgeTint.r); // uEdgeTint
+      shader.setFloat(14, options.edgeTint.g);
+      shader.setFloat(15, options.edgeTint.b);
+      shader.setFloat(16, options.edgeTint.a);
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(13 + i, packed[i]);
+        shader.setFloat(17 + i, packed[i]);
       }
 
-      // The shine is a separate pass composited above the (masked) child in
-      // the widget; replicate that compositing here so the golden shows the
-      // complete glass look.
+      // The shine is a separate pass drawn topmost, outside the GlassLayer
+      // mask (it cuts its own outer edge just outside the silhouette);
+      // replicate that compositing here so the golden shows the complete
+      // glass look.
       final flatProgram = await ui.FragmentProgram.fromAsset(
         'shaders/flat.frag',
       );
@@ -182,6 +190,10 @@ void main() {
         shader.setFloat(10, -uOrigin.dy);
         shader.setFloat(11, width - uOrigin.dx);
         shader.setFloat(12, height - uOrigin.dy);
+        shader.setFloat(13, 0); // uEdgeTint: black at default strength
+        shader.setFloat(14, 0);
+        shader.setFloat(15, 0);
+        shader.setFloat(16, 0.15);
         final packed = packBlobs([
           GlassBlob(
             center: center,
@@ -190,7 +202,7 @@ void main() {
           ),
         ]);
         for (var i = 0; i < packed.length; i++) {
-          shader.setFloat(13 + i, packed[i]);
+          shader.setFloat(17 + i, packed[i]);
         }
         final recorder = ui.PictureRecorder();
         ui.Canvas(recorder).drawRect(
