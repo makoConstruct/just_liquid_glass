@@ -4,6 +4,22 @@ import 'dart:ui';
 /// One full turn in radians.
 const double _tau = math.pi * 2;
 
+/// How a [GlassBlob]'s corners are rounded; see [GlassBlob.cornerStyle].
+enum CornerStyle {
+  /// A circular arc corner (constant curvature `1/cornerRadius`), matching
+  /// [RRect]/standard rounded rectangles. Curvature jumps discontinuously
+  /// from 0 on the flat edge to `1/cornerRadius` at the tangent point.
+  circular,
+
+  /// A "squircle"-like corner (superellipse blend, exponent 4) whose
+  /// curvature rises smoothly from 0 at the tangent point to a peak at the
+  /// 45° point, matching Apple's continuous/"smooth" corner style. At
+  /// `cornerRadius == min(radii)` this produces a true squircle rather than
+  /// a circle. Has no effect on ring segments (see [GlassBlob.holeRadius],
+  /// [GlassBlob.startAngle]): those always render with circular arcs.
+  continuous,
+}
+
 /// A single blob in a [GlassLayer]'s merged signed distance field.
 ///
 /// The base shape is a rounded box with half-extents [radii], rotated by
@@ -12,6 +28,7 @@ const double _tau = math.pi * 2;
 /// * [cornerRadius] rounds the corners. The default of `double.infinity`
 ///   clamps to `min(radii.width, radii.height)`, producing a circle (equal
 ///   radii) or a stadium/pill (unequal radii). `0` gives a sharp rectangle.
+///   [cornerStyle] selects between circular and continuous corner curvature.
 /// * [holeRadius] cuts a circular hole of that radius around the blob center,
 ///   turning the shape into a ring/annulus. The default of
 ///   `double.negativeInfinity` (or any value `<= 0`) means no hole.
@@ -51,6 +68,7 @@ class GlassBlob {
     required this.tint,
     this.rotation = 0,
     this.cornerRadius = double.infinity,
+    this.cornerStyle = CornerStyle.circular,
     this.holeRadius = double.negativeInfinity,
     this.startAngle = 0,
     this.endAngle = _tau,
@@ -73,6 +91,9 @@ class GlassBlob {
   /// Corner rounding radius; clamped to `min(radii.width, radii.height)`.
   final double cornerRadius;
 
+  /// Circular arc corners vs. Apple-style continuous ("squircle") corners.
+  final CornerStyle cornerStyle;
+
   /// Radius of the circular hole cut around [center]; `<= 0` for none.
   final double holeRadius;
 
@@ -91,6 +112,7 @@ class GlassBlob {
         other.tint == tint &&
         other.rotation == rotation &&
         other.cornerRadius == cornerRadius &&
+        other.cornerStyle == cornerStyle &&
         other.holeRadius == holeRadius &&
         other.startAngle == startAngle &&
         other.endAngle == endAngle;
@@ -98,5 +120,5 @@ class GlassBlob {
 
   @override
   int get hashCode => Object.hash(center, radii, tint, rotation, cornerRadius,
-      holeRadius, startAngle, endAngle);
+      cornerStyle, holeRadius, startAngle, endAngle);
 }

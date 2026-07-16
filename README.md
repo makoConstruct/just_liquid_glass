@@ -23,8 +23,6 @@ Non-improvements:
 
 - Doesn't support arbitrary shapes, your shapes must compose from our round-capped segments of roundrect-toruses.
 
-- Corner shape is just circular, not apple's continuous shape. We'll probably address this soon.
-
 - Arbitrarily, the number of blobs supported per layer is currently 16.
 
 Flaws that anyone could fix instantly if they wanted to:

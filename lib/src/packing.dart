@@ -23,6 +23,11 @@ const int floatsPerBlob = 16;
 /// A negative `[11]` marks a circular ring segment (circular radii, fully
 /// rounded, with a hole and a sector): the shader renders those as an arc
 /// with round end caps.
+///
+/// A negative `[6]` marks a continuous ("squircle") corner instead of a
+/// circular arc corner; see `CornerStyle` and sdBlob's corner term. Ring
+/// segments are always circular regardless of `cornerStyle` (see
+/// [isCappedArc]).
 Float32List packBlobs(List<GlassBlob> blobs) {
   assert(blobs.length <= maxBlobs,
       'GlassLayer supports at most $maxBlobs blobs, got ${blobs.length}');
@@ -44,9 +49,16 @@ Float32List packBlobs(List<GlassBlob> blobs) {
     // corner = maxCorner makes the rounded-box SDF reduce to
     // |q| - min(radii), the point field lifted uniformly above zero.
     final maxCorner = math.min(rx, ry);
-    data[o + 6] = maxCorner <= 0 || blob.cornerRadius.isNaN
+    final corner = maxCorner <= 0 || blob.cornerRadius.isNaN
         ? maxCorner
         : blob.cornerRadius.clamp(0.0, maxCorner).toDouble();
+    // cornerRadius packs non-negative in circular mode; a negative sign
+    // (otherwise unused, since it's always clamped >= 0) flags continuous
+    // corners to the shader (see sdBlob's corner term).
+    data[o + 6] =
+        blob.cornerStyle == CornerStyle.continuous && corner > 0
+            ? -corner
+            : corner;
     data[o + 7] =
         (blob.holeRadius.isFinite && blob.holeRadius > 0) ? blob.holeRadius : 0;
 
@@ -94,7 +106,11 @@ bool isCappedArc(GlassBlob blob) {
   final rx = blob.radii.width;
   final ry = blob.radii.height;
   // Non-positive radii (exit lift) always take the rounded-box path.
+  // Continuous corners never take the arc path: at a full corner radius
+  // they form a squircle rather than a circle, which the capped-arc SDF
+  // (built on true circular symmetry) can't represent.
   return math.min(rx, ry) > 0 &&
+      blob.cornerStyle == CornerStyle.circular &&
       _sweep(blob) < (math.pi * 2) - 1e-6 &&
       _effectiveHole(blob) > 0 &&
       (rx - ry).abs() <= 1e-3 &&

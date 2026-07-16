@@ -65,10 +65,27 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c) {
     d = dc - rb;
   } else {
     // Rounded box; cornerRadius is pre-clamped to min(radii) on the CPU, so
-    // cornerRadius == min(radii) yields a stadium/circle.
-    float r = b.z;
+    // cornerRadius == min(radii) yields a stadium/circle (or, in continuous
+    // mode, a squircle).
+    float r = abs(b.z);
     vec2 e = abs(q) - (b.xy - vec2(r));
-    d = length(max(e, vec2(0.0))) + min(max(e.x, e.y), 0.0) - r;
+    vec2 e0 = max(e, vec2(0.0));
+    float corner;
+    if (b.z < 0.0) {
+      // Continuous ("squircle") corner: superellipse blend (exponent 4)
+      // instead of the circular arc's Euclidean norm. Curvature rises from
+      // 0 at the tangent point to a peak at 45°, instead of jumping
+      // straight from 0 to 1/r — this is what gives Apple-style corners
+      // their "continuous" look. Where e0 has a zero component (i.e. on a
+      // flat edge, not in the corner square) this reduces to exactly the
+      // same value as length(e0) below, so it's a strict generalization.
+      vec2 e4 = e0 * e0;
+      e4 = e4 * e4;
+      corner = sqrt(sqrt(e4.x + e4.y));
+    } else {
+      corner = length(e0);
+    }
+    d = corner + min(max(e.x, e.y), 0.0) - r;
 
     // Circular hole around the blob center.
     if (b.w > 0.0) {

@@ -5,6 +5,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_liquid_glass/just_liquid_glass.dart';
 import 'package:just_liquid_glass/src/packing.dart';
 
+Future<ui.Image> _renderBlobs(List<GlassBlob> blobs) async {
+  final program = await ui.FragmentProgram.fromAsset('shaders/flat.frag');
+  final shader = program.fragmentShader();
+  shader.setFloat(0, blobs.length.toDouble());
+  shader.setFloat(1, 4); // blendRadius
+  shader.setFloat(2, 0); // mode: tint fill
+  shader.setFloat(3, 1); // dpr
+  shader.setFloat(4, 0);
+  shader.setFloat(5, 0);
+  shader.setFloat(6, 1);
+  final packed = packBlobs(blobs);
+  for (var i = 0; i < packed.length; i++) {
+    shader.setFloat(7 + i, packed[i]);
+  }
+  final recorder = ui.PictureRecorder();
+  ui.Canvas(recorder).drawRect(
+    const ui.Rect.fromLTWH(0, 0, 200, 200),
+    ui.Paint()..shader = shader,
+  );
+  return recorder.endRecording().toImage(200, 200);
+}
+
+int _alphaAt(ByteData bytes, int x, int y, int w) =>
+    bytes.getUint8((y * w + x) * 4 + 3);
+
 // Regression test for two shader-portability bugs found on the SkSL backend:
 //  * `break` inside the blob loop being silently miscompiled, letting the
 //    zero-filled unused blob slots (whose degenerate SDF is 0 everywhere)
@@ -120,5 +145,81 @@ void main() {
 
     // Lifted past the blend radius: bit-identical to the blob being absent.
     expect(lifted, equals(alone));
+  });
+
+  test('continuous full-corner blob renders as a squircle, not a circle',
+      () async {
+    final image = await _renderBlobs([
+      const GlassBlob(
+        center: ui.Offset(100, 100),
+        radii: ui.Size(60, 60),
+        cornerRadius: 60,
+        cornerStyle: CornerStyle.continuous,
+        tint: ui.Color(0xFF4FC3F7),
+      ),
+    ]);
+    final data =
+        (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+
+    // Axis point: same extent as a circle of radius 60 (the corner formula
+    // is exact on-axis regardless of exponent).
+    expect(_alphaAt(data, 160, 100, 200), lessThan(128));
+    expect(_alphaAt(data, 159, 100, 200), greaterThan(200));
+
+    // Diagonal point q=(48,48): a circle of r=60 has |q|=67.9 there, ~8px
+    // outside (well past the AA band). The n=4 superellipse |x|^4+|y|^4=r^4
+    // reaches further out on the diagonal than the inscribed circle (it
+    // interpolates toward a square as n grows past 2): corner value is
+    // 48*2^(1/4) = 57.08, i.e. d = -2.9, safely inside. So (148,148) should
+    // be opaque despite being outside the radius-60 circle -- the defining
+    // visual trait of a "fuller" continuous corner.
+    expect(_alphaAt(data, 148, 148, 200), greaterThan(200),
+        reason: 'squircle diagonal should bulge past a same-radius circle');
+  });
+
+  test('continuous partial corner matches circular on the flat edge',
+      () async {
+    // Off the corner region entirely (well within a long flat edge), a
+    // continuous corner blob must render identically to a circular one:
+    // the corner formula collapses to the same value there.
+    final circular = await _renderBlobs([
+      const GlassBlob(
+        center: ui.Offset(100, 100),
+        radii: ui.Size(80, 40),
+        cornerRadius: 10,
+        tint: ui.Color(0xFF4FC3F7),
+      ),
+    ]);
+    final continuous = await _renderBlobs([
+      const GlassBlob(
+        center: ui.Offset(100, 100),
+        radii: ui.Size(80, 40),
+        cornerRadius: 10,
+        cornerStyle: CornerStyle.continuous,
+        tint: ui.Color(0xFF4FC3F7),
+      ),
+    ]);
+    final a =
+        (await circular.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    final b =
+        (await continuous.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+
+    for (final x in [40, 60, 100, 140, 160]) {
+      expect(_alphaAt(b, x, 60, 200), _alphaAt(a, x, 60, 200),
+          reason: 'flat-edge pixel x=$x should match exactly');
+    }
+
+    // Near the corner (close to the right edge), the two should differ,
+    // showing continuous mode is actually doing something there.
+    var anyDiffer = false;
+    for (final x in [172, 175, 178]) {
+      for (final y in [65, 70, 75]) {
+        if (_alphaAt(b, x, y, 200) != _alphaAt(a, x, y, 200)) {
+          anyDiffer = true;
+        }
+      }
+    }
+    expect(anyDiffer, isTrue,
+        reason: 'corner region should visibly differ between styles');
   });
 }

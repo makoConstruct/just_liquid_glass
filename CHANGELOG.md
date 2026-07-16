@@ -1,3 +1,6 @@
+# 0.3.0
+- Added apple style continuous corners as an option
+
 # 0.2.0
 - Edge tint (`GlassOptions.edgeTint`, opt-in — default transparent): a color
   spread across the bevel band, deepening toward the silhouette like the

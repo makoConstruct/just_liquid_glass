@@ -208,6 +208,45 @@ void main() {
     });
   });
 
+  test('continuous corner style packs cornerRadius negated', () {
+    final data = packBlobs([
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(30, 40),
+        cornerRadius: 5,
+        cornerStyle: CornerStyle.continuous,
+        tint: white,
+      ),
+    ]);
+    expect(data[6], -5);
+  });
+
+  test('continuous corner style with zero radius stays non-negative', () {
+    final data = packBlobs([
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(30, 40),
+        cornerRadius: 0,
+        cornerStyle: CornerStyle.continuous,
+        tint: white,
+      ),
+    ]);
+    expect(data[6], 0);
+  });
+
+  test('continuous corner style never selects the capped-arc path', () {
+    const blob = GlassBlob(
+      center: Offset.zero,
+      radii: Size(50, 50),
+      holeRadius: 30,
+      startAngle: 0,
+      endAngle: math.pi,
+      cornerStyle: CornerStyle.continuous,
+      tint: white,
+    );
+    expect(isCappedArc(blob), isFalse);
+  });
+
   test('rejects more than maxBlobs', () {
     final blobs = List.generate(
       maxBlobs + 1,
