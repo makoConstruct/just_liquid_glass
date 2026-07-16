@@ -1,6 +1,6 @@
 name: just_liquid_glass
 description: "liquid glass for flutter with fewer bugs and support for a wider variety of sdf shapes"
-version: 0.2.0
+version: 0.3.0
 license: MIT
 homepage: https://github.com/makoConstruct/just_liquid_glass
 repository: https://github.com/makoConstruct/just_liquid_glass
