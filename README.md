@@ -31,6 +31,7 @@ Flaws that anyone could fix instantly if they wanted to:
 
 - Our flat fallback doesn't support the blur. Fixing this would be easy. The reason it isn't in today is that mako kinda firmly recommends using fully opaque blobs on platforms that don't have full glass. Glass is a good way of adding an outline to an otherwise quite indistinct graphical effect. Without that, you probably shouldn't use transparent-blurred substances this much.
 
+- Very minor, few will notice this: Blur is applied before refraction instead of after. The ideal is probably apply blur to a varying degree depending on the ray length, but probably nobody is doing that. Fixing this probably wont be feasible until flutter's issues with use of intermediate textures are resolved.
 
 **Everything below this line was written by Fable but has been reviewed.**
 
