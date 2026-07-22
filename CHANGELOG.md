@@ -1,5 +1,12 @@
+# 0.4.0
+- Continuous corners are now controlled with a double that lerps from round corners instead of an enum flag.
+- `blobBuilder` allows positioning blobs relative to current layout, pretty important for implementing Widgets!
+
 # 0.3.0
-- Added apple style continuous corners as an option
+- Apple-style continuous ("squircle") corners: `GlassBlob.cornerContinuity`
+  blends the corner profile from circular arcs (0) to continuous corners (1).
+  It's a plain lerpable double, so the silhouette can be animated — e.g. a
+  fully rounded blob morphs from a true circle to an Apple-squircle.
 
 # 0.2.0
 - Edge tint (`GlassOptions.edgeTint`, opt-in — default transparent): a color

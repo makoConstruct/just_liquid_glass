@@ -208,40 +208,58 @@ void main() {
     });
   });
 
-  test('continuous corner style packs cornerRadius negated', () {
+  test('cornerContinuity packs into its own slot, clamped to 0..1', () {
     final data = packBlobs([
       const GlassBlob(
         center: Offset.zero,
         radii: Size(30, 40),
         cornerRadius: 5,
-        cornerStyle: CornerStyle.continuous,
+        cornerContinuity: 0.25,
+        tint: white,
+      ),
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(30, 40),
+        cornerRadius: 5,
+        cornerContinuity: 3,
         tint: white,
       ),
     ]);
-    expect(data[6], -5);
+    expect(data[6], 5); // cornerRadius stays plain (no sign encoding)
+    expect(data[16], 0.25);
+    expect(data[floatsPerBlob + 16], 1); // clamped
   });
 
-  test('continuous corner style with zero radius stays non-negative', () {
+  test('cornerContinuity defaults to 0 and is suppressed at zero corner', () {
     final data = packBlobs([
       const GlassBlob(
         center: Offset.zero,
         radii: Size(30, 40),
+        tint: white,
+      ),
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(30, 40),
         cornerRadius: 0,
-        cornerStyle: CornerStyle.continuous,
+        cornerContinuity: 1,
         tint: white,
       ),
     ]);
-    expect(data[6], 0);
+    expect(data[16], 0);
+    // Sharp rectangles keep the canonical Euclidean field: continuity would
+    // only alter the exterior field, not the silhouette.
+    expect(data[floatsPerBlob + 6], 0);
+    expect(data[floatsPerBlob + 16], 0);
   });
 
-  test('continuous corner style never selects the capped-arc path', () {
+  test('any cornerContinuity never selects the capped-arc path', () {
     const blob = GlassBlob(
       center: Offset.zero,
       radii: Size(50, 50),
       holeRadius: 30,
       startAngle: 0,
       endAngle: math.pi,
-      cornerStyle: CornerStyle.continuous,
+      cornerContinuity: 0.5,
       tint: white,
     );
     expect(isCappedArc(blob), isFalse);

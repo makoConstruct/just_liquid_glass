@@ -33,6 +33,10 @@ Flaws that anyone could fix instantly if they wanted to:
 
 - Very minor, few will notice this: Blur is applied before refraction instead of after. The ideal is probably apply blur to a varying degree depending on the ray length, but probably nobody is doing that. Fixing this probably wont be feasible until flutter's issues with use of intermediate textures are resolved.
 
+Minor features:
+
+- You can lerp between apple-style continuous corners and round corners.
+
 **Everything below this line was written by Fable but has been reviewed.**
 
 ## Usage

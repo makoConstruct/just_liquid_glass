@@ -5,11 +5,11 @@ import 'dart:ui';
 import 'glass_blob.dart';
 
 /// Maximum number of blobs a single [GlassLayer] can render. Must match the
-/// `uBlobs` array size in the shaders (4 vec4 per blob).
+/// `uBlobs` array size in the shaders (5 vec4 per blob).
 const int maxBlobs = 16;
 
-/// Floats per blob in the packed uniform layout (4 vec4).
-const int floatsPerBlob = 16;
+/// Floats per blob in the packed uniform layout (5 vec4).
+const int floatsPerBlob = 20;
 
 /// Packs [blobs] into the flat float layout consumed by both shaders.
 ///
@@ -19,15 +19,16 @@ const int floatsPerBlob = 16;
 /// [ 4] radii.x    [ 5] radii.y    [ 6] cornerRadius  [ 7] holeRadius (0 = none)
 /// [ 8] axis.x     [ 9] axis.y     [10] cos(halfAp) (-2 = full)  [11] sin(halfAp)
 /// [12] tint.r     [13] tint.g     [14] tint.b        [15] tint.a
+/// [16] cornerContinuity            [17..19] reserved (0)
 /// ```
 /// A negative `[11]` marks a circular ring segment (circular radii, fully
 /// rounded, with a hole and a sector): the shader renders those as an arc
 /// with round end caps.
 ///
-/// A negative `[6]` marks a continuous ("squircle") corner instead of a
-/// circular arc corner; see `CornerStyle` and sdBlob's corner term. Ring
-/// segments are always circular regardless of `cornerStyle` (see
-/// [isCappedArc]).
+/// `[16]` blends the corner term from a circular arc (0) to a continuous
+/// ("squircle") corner (1); see [GlassBlob.cornerContinuity] and sdBlob's
+/// corner term. Ring segments are always circular regardless of continuity
+/// (see [isCappedArc]).
 Float32List packBlobs(List<GlassBlob> blobs) {
   assert(blobs.length <= maxBlobs,
       'GlassLayer supports at most $maxBlobs blobs, got ${blobs.length}');
@@ -52,13 +53,7 @@ Float32List packBlobs(List<GlassBlob> blobs) {
     final corner = maxCorner <= 0 || blob.cornerRadius.isNaN
         ? maxCorner
         : blob.cornerRadius.clamp(0.0, maxCorner).toDouble();
-    // cornerRadius packs non-negative in circular mode; a negative sign
-    // (otherwise unused, since it's always clamped >= 0) flags continuous
-    // corners to the shader (see sdBlob's corner term).
-    data[o + 6] =
-        blob.cornerStyle == CornerStyle.continuous && corner > 0
-            ? -corner
-            : corner;
+    data[o + 6] = corner;
     data[o + 7] =
         (blob.holeRadius.isFinite && blob.holeRadius > 0) ? blob.holeRadius : 0;
 
@@ -84,6 +79,13 @@ Float32List packBlobs(List<GlassBlob> blobs) {
     data[o + 13] = blob.tint.g;
     data[o + 14] = blob.tint.b;
     data[o + 15] = blob.tint.a;
+
+    // Suppressed at corner <= 0 so sharp rectangles and exit-lift blobs keep
+    // the canonical Euclidean field; the two corner norms only agree inside
+    // the corner square, which those cases don't have. [17..19] stay 0.
+    data[o + 16] = corner > 0
+        ? blob.cornerContinuity.clamp(0.0, 1.0).toDouble()
+        : 0;
   }
   return data;
 }
@@ -106,11 +108,11 @@ bool isCappedArc(GlassBlob blob) {
   final rx = blob.radii.width;
   final ry = blob.radii.height;
   // Non-positive radii (exit lift) always take the rounded-box path.
-  // Continuous corners never take the arc path: at a full corner radius
-  // they form a squircle rather than a circle, which the capped-arc SDF
-  // (built on true circular symmetry) can't represent.
+  // Any corner continuity never takes the arc path: at a full corner radius
+  // it forms a (partial) squircle rather than a circle, which the capped-arc
+  // SDF (built on true circular symmetry) can't represent.
   return math.min(rx, ry) > 0 &&
-      blob.cornerStyle == CornerStyle.circular &&
+      blob.cornerContinuity <= 0 &&
       _sweep(blob) < (math.pi * 2) - 1e-6 &&
       _effectiveHole(blob) > 0 &&
       (rx - ry).abs() <= 1e-3 &&

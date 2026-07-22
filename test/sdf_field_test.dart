@@ -154,7 +154,7 @@ void main() {
         center: ui.Offset(100, 100),
         radii: ui.Size(60, 60),
         cornerRadius: 60,
-        cornerStyle: CornerStyle.continuous,
+        cornerContinuity: 1,
         tint: ui.Color(0xFF4FC3F7),
       ),
     ]);
@@ -177,6 +177,35 @@ void main() {
         reason: 'squircle diagonal should bulge past a same-radius circle');
   });
 
+  test('fractional continuity morphs the silhouette between the two', () async {
+    GlassBlob blob(double t) => GlassBlob(
+          center: const ui.Offset(100, 100),
+          radii: const ui.Size(60, 60),
+          cornerRadius: 60,
+          cornerContinuity: t,
+          tint: const ui.Color(0xFF4FC3F7),
+        );
+
+    // Diagonal probes (fragments sample at +0.5, so pixel (144,144) probes
+    // q = (44.5, 44.5)). Corner value there is 44.5 * mix(2^(1/2), 2^(1/4), t):
+    //   t=0:   62.9 (d = +2.9, outside)   t=0.5: 57.9 (d = -2.1, inside)
+    // and at pixel (148,148), q = (48.5, 48.5), 48.5 * the same mix:
+    //   t=0.5: 63.1 (d = +3.1, outside)   t=1:   57.7 (d = -2.3, inside)
+    // All margins clear the ~0.75px AA band, so the half-way silhouette lies
+    // strictly between the circle and the squircle — continuity actually
+    // interpolates rather than snapping to either profile.
+    final circle = await _renderBlobs([blob(0)]);
+    final half = await _renderBlobs([blob(0.5)]);
+    final cD = (await circle.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    final hD = (await half.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+
+    expect(_alphaAt(cD, 144, 144, 200), 0);
+    expect(_alphaAt(hD, 144, 144, 200), 255,
+        reason: 'half continuity should bulge past the circle');
+    expect(_alphaAt(hD, 148, 148, 200), 0,
+        reason: 'half continuity should stay inside the full squircle');
+  });
+
   test('continuous partial corner matches circular on the flat edge',
       () async {
     // Off the corner region entirely (well within a long flat edge), a
@@ -195,7 +224,7 @@ void main() {
         center: ui.Offset(100, 100),
         radii: ui.Size(80, 40),
         cornerRadius: 10,
-        cornerStyle: CornerStyle.continuous,
+        cornerContinuity: 1,
         tint: ui.Color(0xFF4FC3F7),
       ),
     ]);

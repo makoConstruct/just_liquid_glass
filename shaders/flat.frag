@@ -31,9 +31,9 @@ uniform float uShineIntensity; // 4 (shine mode only)
 uniform float uShineDirection; // 5 (shine mode only)
 uniform float uBevelThickness; // 6 (shine mode only)
 
-// 4 vec4 per blob, up to 16 blobs (float indices 7..262).
+// 5 vec4 per blob, up to 16 blobs (float indices 7..326).
 // Layout identical to glass.frag.
-uniform vec4 uBlobs[64];
+uniform vec4 uBlobs[80];
 
 out vec4 fragColor;
 
@@ -41,7 +41,7 @@ out vec4 fragColor;
 // SDF core (keep in sync with glass.frag)
 // ---------------------------------------------------------------------------
 
-float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c) {
+float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
   // Into the blob's local frame.
   vec2 q = p - a.xy;
   q = vec2(a.z * q.x + a.w * q.y, -a.w * q.x + a.z * q.y);
@@ -65,25 +65,25 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c) {
     d = dc - rb;
   } else {
     // Rounded box; cornerRadius is pre-clamped to min(radii) on the CPU, so
-    // cornerRadius == min(radii) yields a stadium/circle (or, in continuous
-    // mode, a squircle).
-    float r = abs(b.z);
+    // cornerRadius == min(radii) yields a stadium/circle (or, at full
+    // continuity, a squircle). A negative r is the exit-lift encoding: it
+    // reduces the field to the point field lifted by -min(radii).
+    float r = b.z;
     vec2 e = abs(q) - (b.xy - vec2(r));
     vec2 e0 = max(e, vec2(0.0));
-    float corner;
-    if (b.z < 0.0) {
-      // Continuous ("squircle") corner: superellipse blend (exponent 4)
-      // instead of the circular arc's Euclidean norm. Curvature rises from
-      // 0 at the tangent point to a peak at 45°, instead of jumping
-      // straight from 0 to 1/r — this is what gives Apple-style corners
-      // their "continuous" look. Where e0 has a zero component (i.e. on a
-      // flat edge, not in the corner square) this reduces to exactly the
-      // same value as length(e0) below, so it's a strict generalization.
+    float corner = length(e0);
+    if (squircle > 0.0) {
+      // Continuous ("squircle") corner: blend toward the superellipse norm
+      // (exponent 4) instead of the circular arc's Euclidean norm. Curvature
+      // rises from 0 at the tangent point to a peak at 45°, instead of
+      // jumping straight from 0 to 1/r — this is what gives Apple-style
+      // corners their "continuous" look. Where e0 has a zero component
+      // (i.e. on a flat edge, not in the corner square) the two norms agree
+      // exactly, so any blend is a strict generalization — and fractional
+      // squircle lerps the corner profile, morphing circle -> squircle.
       vec2 e4 = e0 * e0;
       e4 = e4 * e4;
-      corner = sqrt(sqrt(e4.x + e4.y));
-    } else {
-      corner = length(e0);
+      corner = mix(corner, sqrt(sqrt(e4.x + e4.y)), squircle);
     }
     d = corner + min(max(e.x, e.y), 0.0) - r;
 
@@ -110,8 +110,8 @@ float sceneD(vec2 p) {
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
-      float di =
-          sdBlob(p, uBlobs[i * 4], uBlobs[i * 4 + 1], uBlobs[i * 4 + 2]);
+      float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
+          uBlobs[i * 5 + 2], uBlobs[i * 5 + 4].x);
       float h = clamp(0.5 + 0.5 * (d - di) / k, 0.0, 1.0);
       d = mix(d, di, h) - k * h * (1.0 - h);
     }
@@ -125,14 +125,14 @@ float scene(vec2 p, out vec4 tint) {
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
-      float di =
-          sdBlob(p, uBlobs[i * 4], uBlobs[i * 4 + 1], uBlobs[i * 4 + 2]);
+      float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
+          uBlobs[i * 5 + 2], uBlobs[i * 5 + 4].x);
       float h = clamp(0.5 + 0.5 * (d - di) / k, 0.0, 1.0);
       d = mix(d, di, h) - k * h * (1.0 - h);
       // ease-in-out so the tint gradient is C1 at the blend-band edges;
       // geometry must keep linear h (polynomial smin assumes it)
       float hc = h * h * (3.0 - 2.0 * h);
-      tint = mix(tint, uBlobs[i * 4 + 3], hc);
+      tint = mix(tint, uBlobs[i * 5 + 3], hc);
     }
   }
   return d;

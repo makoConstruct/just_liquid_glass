@@ -4,22 +4,6 @@ import 'dart:ui';
 /// One full turn in radians.
 const double _tau = math.pi * 2;
 
-/// How a [GlassBlob]'s corners are rounded; see [GlassBlob.cornerStyle].
-enum CornerStyle {
-  /// A circular arc corner (constant curvature `1/cornerRadius`), matching
-  /// [RRect]/standard rounded rectangles. Curvature jumps discontinuously
-  /// from 0 on the flat edge to `1/cornerRadius` at the tangent point.
-  circular,
-
-  /// A "squircle"-like corner (superellipse blend, exponent 4) whose
-  /// curvature rises smoothly from 0 at the tangent point to a peak at the
-  /// 45° point, matching Apple's continuous/"smooth" corner style. At
-  /// `cornerRadius == min(radii)` this produces a true squircle rather than
-  /// a circle. Has no effect on ring segments (see [GlassBlob.holeRadius],
-  /// [GlassBlob.startAngle]): those always render with circular arcs.
-  continuous,
-}
-
 /// A single blob in a [GlassLayer]'s merged signed distance field.
 ///
 /// The base shape is a rounded box with half-extents [radii], rotated by
@@ -28,7 +12,8 @@ enum CornerStyle {
 /// * [cornerRadius] rounds the corners. The default of `double.infinity`
 ///   clamps to `min(radii.width, radii.height)`, producing a circle (equal
 ///   radii) or a stadium/pill (unequal radii). `0` gives a sharp rectangle.
-///   [cornerStyle] selects between circular and continuous corner curvature.
+///   [cornerContinuity] blends the corner profile from circular arcs toward
+///   Apple-style continuous ("squircle") corners.
 /// * [holeRadius] cuts a circular hole of that radius around the blob center,
 ///   turning the shape into a ring/annulus. The default of
 ///   `double.negativeInfinity` (or any value `<= 0`) means no hole.
@@ -68,11 +53,46 @@ class GlassBlob {
     required this.tint,
     this.rotation = 0,
     this.cornerRadius = double.infinity,
-    this.cornerStyle = CornerStyle.circular,
+    this.cornerContinuity = 0,
     this.holeRadius = double.negativeInfinity,
     this.startAngle = 0,
     this.endAngle = _tau,
   });
+
+  /// Creates a pill-shaped blob rendered as a round-capped line of the given
+  /// [thickness] running between [p1] and [p2].
+  ///
+  /// The pill's semicircular caps are centered on [p1] and [p2] (so it extends
+  /// `thickness / 2` past each end, like [StrokeCap.round]), giving it a total
+  /// length of `(p2 - p1).distance + thickness` and a height of [thickness].
+  /// When `p1 == p2` this is a circle of diameter [thickness].
+  ///
+  /// [cornerContinuity] selects the cap curvature; the remaining parameters
+  /// ([holeRadius], [startAngle], [endAngle]) forward to the default
+  /// constructor for the rare case of clipping a line into a ring segment.
+  factory GlassBlob.line(
+    Offset p1,
+    Offset p2, {
+    required double thickness,
+    required Color tint,
+    double cornerContinuity = 0,
+    double holeRadius = double.negativeInfinity,
+    double startAngle = 0,
+    double endAngle = _tau,
+  }) {
+    final Offset delta = p2 - p1;
+    final double length = delta.distance;
+    return GlassBlob(
+      center: p1 + delta / 2,
+      radii: Size((length + thickness) / 2, thickness / 2),
+      tint: tint,
+      rotation: length == 0 ? 0 : math.atan2(delta.dy, delta.dx),
+      cornerContinuity: cornerContinuity,
+      holeRadius: holeRadius,
+      startAngle: startAngle,
+      endAngle: endAngle,
+    );
+  }
 
   /// Center of the blob in the [GlassLayer]'s local logical coordinates.
   final Offset center;
@@ -91,8 +111,25 @@ class GlassBlob {
   /// Corner rounding radius; clamped to `min(radii.width, radii.height)`.
   final double cornerRadius;
 
-  /// Circular arc corners vs. Apple-style continuous ("squircle") corners.
-  final CornerStyle cornerStyle;
+  /// Corner profile continuity, clamped to `0..1` when packed.
+  ///
+  /// At `0`, corners are circular arcs (constant curvature `1/cornerRadius`,
+  /// matching [RRect]/standard rounded rectangles); curvature jumps
+  /// discontinuously from 0 on the flat edge to `1/cornerRadius` at the
+  /// tangent point. At `1`, corners follow a superellipse blend (exponent 4)
+  /// whose curvature instead rises smoothly from 0 at the tangent point to a
+  /// peak at the 45° point, matching Apple's continuous/"smooth" corner
+  /// style; at `cornerRadius == min(radii)` this produces a true squircle
+  /// rather than a circle.
+  ///
+  /// Values in between lerp the corner profile, so it can be animated — e.g.
+  /// a fully rounded blob morphs from a true circle (`0`) to an
+  /// Apple-squircle (`1`). Both profiles agree exactly on flat edges, so
+  /// only the corner regions move.
+  ///
+  /// Has no effect on ring segments (see [holeRadius], [startAngle]): those
+  /// always render with circular arcs.
+  final double cornerContinuity;
 
   /// Radius of the circular hole cut around [center]; `<= 0` for none.
   final double holeRadius;
@@ -112,13 +149,22 @@ class GlassBlob {
         other.tint == tint &&
         other.rotation == rotation &&
         other.cornerRadius == cornerRadius &&
-        other.cornerStyle == cornerStyle &&
+        other.cornerContinuity == cornerContinuity &&
         other.holeRadius == holeRadius &&
         other.startAngle == startAngle &&
         other.endAngle == endAngle;
   }
 
   @override
-  int get hashCode => Object.hash(center, radii, tint, rotation, cornerRadius,
-      cornerStyle, holeRadius, startAngle, endAngle);
+  int get hashCode => Object.hash(
+    center,
+    radii,
+    tint,
+    rotation,
+    cornerRadius,
+    cornerContinuity,
+    holeRadius,
+    startAngle,
+    endAngle,
+  );
 }
