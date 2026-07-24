@@ -5,7 +5,7 @@ A form of liquid glass for Flutter: blobby, SDF-merged glass shapes with refract
 
 It's entirely vibecoded (Fable 5), but it's been tested and iterated and refined and used, and is probably very stable, given the defensive approach we took. Fable was instructed to learn from other flutter libraries and take an approach that dodges some of flutter's bugs, a standout decision resulting from that was to avoid using intermediate textures so animating blobs wouldn't churn GPU memory. The full list is in [Bugs dodged](#bugs-dodged) below.
 
-We do aspire to look like apple's implementation by default, we currently aren't there, but we're not far.
+We aspire to look like apple's implementation, by default, we're probably fairly close at this point.
 
 Improvements over flutter_liquid_glass:
 
@@ -17,7 +17,7 @@ Improvements over flutter_liquid_glass:
 
 - Shapes can be rotated
 
-- The blobs of a layer implicitly form a clip mask on the child. This turns out to often be the right thing for animated entry and edge shaping.
+- The blobs of a layer implicitly form a clip mask on the child. This turns out to often be the right thing for animated entry shaping the edges of a container.
 
 Non-improvements:
 
@@ -27,11 +27,13 @@ Non-improvements:
 
 Flaws that anyone could fix instantly if they wanted to:
 
+- There are currently no widgets that automate sizing, just haven't needed them yet. It would be easy to build those using `GlassLayer`'s recently added `List<GlassBlob> Function(Size size)? blobBuilder` parameter.
+
 - No chromatic aberration. (it could probably be done in just one prompt, mako just didn't want it (it's not actually good!), but would accept it, even as the default setting, if someone else wants to add it)
 
 - Our flat fallback doesn't support the blur. Fixing this would be easy. The reason it isn't in today is that mako kinda firmly recommends using fully opaque blobs on platforms that don't have full glass. Glass is a good way of adding an outline to an otherwise quite indistinct graphical effect. Without that, you probably shouldn't use transparent-blurred substances this much.
 
-- Very minor, few will notice this: Blur is applied before refraction instead of after. The ideal is probably apply blur to a varying degree depending on the ray length, but probably nobody is doing that. Fixing this probably wont be feasible until flutter's issues with use of intermediate textures are resolved.
+- Minor: Blur is applied before refraction instead of after. The ideal is probably apply blur to a varying degree depending on the ray length, but probably nobody is doing that. Fixing this probably wont be feasible until flutter's issues with use of intermediate textures are resolved.
 
 Minor features:
 
