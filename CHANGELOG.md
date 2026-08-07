@@ -1,3 +1,6 @@
+# 0.5.0
+- Added distortion blobs and GlassSwell
+
 # 0.4.0
 - Continuous corners are now controlled with a double that lerps from round corners instead of an enum flag.
 - `blobBuilder` allows positioning blobs relative to current layout, pretty important for implementing Widgets!
