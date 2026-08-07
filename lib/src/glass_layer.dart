@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import 'glass_blob.dart';
@@ -27,10 +28,12 @@ import 'shine_motion.dart';
 /// falls back to flat otherwise, rather than throwing.
 ///
 /// The rendered blobs are [blobs] concatenated with the result of
-/// [blobBuilder] (if any); the builder runs at paint time against the
-/// layer's laid-out size, [CustomPainter]-style, so blobs can be placed
-/// relative to the panel's actual dimensions. If [blobBuilder] is null and
-/// [blobs] is empty, [child] is rendered unmasked and no overlay is drawn.
+/// [blobBuilder] (if any) and with [GlassLayerState.injectedBlobs], which
+/// descendants push in through a [GlobalKey]; the builder runs at paint time
+/// against the layer's laid-out size, [CustomPainter]-style, so blobs can be
+/// placed relative to the panel's actual dimensions. If [blobBuilder] is null
+/// and both blob lists are empty, [child] is rendered unmasked and no overlay
+/// is drawn.
 /// The glass overlay ignores pointer events; hit testing goes to [child].
 class GlassLayer extends StatefulWidget {
   const GlassLayer({
@@ -75,7 +78,7 @@ class GlassLayer extends StatefulWidget {
   static Future<void> precache() => _GlassPrograms.ensureLoaded();
 
   @override
-  State<GlassLayer> createState() => _GlassLayerState();
+  GlassLayerState createState() => GlassLayerState();
 }
 
 class _GlassPrograms {
@@ -114,25 +117,43 @@ const int _flatShineDirection = 5;
 const int _flatBevelThickness = 6;
 const int _flatBlobsStart = 7;
 
-/// Resolves the effective blob list — the static [GlassLayer.blobs] plus the
-/// [GlassLayer.blobBuilder] output — into the packed uniform floats and the
-/// padded shading bounds.
+/// Bumped by [GlassLayerState.replaceBlob]: carries a revision so
+/// [_BlobResolver]s know to re-resolve, and notifies so every pass repaints
+/// — injected-blob changes never rebuild the layer.
+class _InjectionNotifier extends ChangeNotifier {
+  int revision = 0;
+
+  void bump() {
+    revision++;
+    notifyListeners();
+  }
+}
+
+/// Resolves the effective blob list — the static [GlassLayer.blobs], the
+/// live [GlassLayerState.injectedBlobs] and the [GlassLayer.blobBuilder]
+/// output — into the packed uniform floats and the padded shading bounds.
 ///
 /// One instance is created per [GlassLayer] build and shared by every pass
 /// (backdrop/fill, mask, shine). Each pass calls [resolveFor] from its paint
 /// with its own laid-out size; all passes fill the layer, so the sizes agree
-/// and the work runs once, cached until the size changes. Without a builder
-/// the list is size-independent and resolved eagerly.
+/// and the work runs once, cached until the size or the injection revision
+/// changes.
 class _BlobResolver {
-  _BlobResolver(this.blobs, this.builder, this.options) {
-    if (builder == null) _resolve(blobs);
-  }
+  _BlobResolver(
+      this.blobs, this.injected, this.injections, this.builder, this.options);
 
   final List<GlassBlob> blobs;
+
+  /// The layer state's LIVE injected-blob list. Mutations are signalled
+  /// through [injections] (whose revision keys the cache) rather than by a
+  /// rebuild, so the reference is shared, not copied.
+  final List<GlassBlob> injected;
+  final _InjectionNotifier injections;
   final List<GlassBlob> Function(Size size)? builder;
   final GlassOptions options;
 
   Size? _resolvedSize;
+  int _resolvedRevision = -1;
 
   /// Number of blobs in the resolved list.
   int count = 0;
@@ -141,23 +162,24 @@ class _BlobResolver {
   Float32List packed = Float32List(0);
 
   /// Bounding rect of the merged field ([Rect.zero] when [count] is 0),
-  /// padded so smooth-min bulges, the AA band, and (for the glass pass)
-  /// refraction displacement and the engine blur's read reach (~3 sigma =
-  /// 1.5 * blurRadius) all stay inside it. Shading is restricted to this
-  /// region so GPU cost scales with blob area rather than screen area.
+  /// padded so smooth-min bulges, distortion pushes, the AA band, and (for
+  /// the glass pass) refraction displacement and the engine blur's read
+  /// reach (~3 sigma = 1.5 * blurRadius) all stay inside it. Shading is
+  /// restricted to this region so GPU cost scales with blob area rather
+  /// than screen area.
   Rect bounds = Rect.zero;
 
-  /// Re-resolves against [size] if it changed; call from paint with the
-  /// pass's laid-out size.
+  /// Re-resolves against [size] if it or the injection revision changed;
+  /// call from paint with the pass's laid-out size.
   void resolveFor(Size size) {
-    if (builder == null || _resolvedSize == size) return;
+    final revision = injections.revision;
+    if (_resolvedSize == size && _resolvedRevision == revision) return;
     _resolvedSize = size;
-    final built = builder!(size);
-    _resolve(blobs.isEmpty
-        ? built
-        : built.isEmpty
-            ? blobs
-            : [...blobs, ...built]);
+    _resolvedRevision = revision;
+    final built = builder == null ? const <GlassBlob>[] : builder!(size);
+    _resolve(injected.isEmpty && built.isEmpty
+        ? blobs
+        : [...blobs, ...injected, ...built]);
   }
 
   void _resolve(List<GlassBlob> all) {
@@ -171,9 +193,16 @@ class _BlobResolver {
     for (final blob in all.skip(1)) {
       b = b.expandToInclude(blobBounds(blob));
     }
+    // Distortion pushes every nearby surface outward by up to the blob's
+    // strength; overlapping distorters add, so pad by their (positive) sum.
+    var distortPad = 0.0;
+    for (final blob in all) {
+      if (blob.distortion > 0) distortPad += blob.distortion;
+    }
     final pad = options.blendRadius +
         options.refractionIntensity +
         1.5 * options.blurRadius +
+        distortPad +
         8;
     bounds = b.inflate(pad);
   }
@@ -181,7 +210,8 @@ class _BlobResolver {
   /// Whether swapping [old] for [current] can change painted output. Builder
   /// closures can't be compared, so any builder forces a repaint — the same
   /// convention [CustomPainter.shouldRepaint] implementations use for
-  /// callbacks.
+  /// callbacks. Injected-blob changes are not considered: those repaint
+  /// through [_InjectionNotifier] without any widget swap.
   static bool repaintNeeded(_BlobResolver old, _BlobResolver current) {
     if (identical(old, current)) return false;
     if (old.builder != null || current.builder != null) return true;
@@ -189,12 +219,88 @@ class _BlobResolver {
   }
 }
 
-class _GlassLayerState extends State<GlassLayer> {
+/// State of a [GlassLayer]. Public so that a descendant holding a
+/// `GlobalKey<GlassLayerState>` can push blobs into the layer through
+/// [replaceBlob].
+class GlassLayerState extends State<GlassLayer> {
   ui.FragmentShader? _glassShader;
   ui.FragmentShader? _fillShader;
   ui.FragmentShader? _maskShader;
   ui.FragmentShader? _shineShader;
   bool _motionRetained = false;
+
+  /// Blobs pushed in from elsewhere through [replaceBlob], rendered as though
+  /// appended to [GlassLayer.blobs]. They let a widget *inside* [GlassLayer
+  /// .child] — a button drawing its own press highlight, say — join the
+  /// layer's merged surface without its geometry having to travel up to the
+  /// layer's owner and back down.
+  ///
+  /// Positions are in the layer's local coordinates like every other blob; a
+  /// descendant gets there with
+  /// `box.localToGlobal(Offset.zero, ancestor: layerBox)`, [layerBox] being
+  /// the render object of the context holding the layer's [GlobalKey].
+  ///
+  /// Read-only from the outside: go through [replaceBlob], which is what makes
+  /// the layer repaint.
+  final List<GlassBlob> injectedBlobs = [];
+
+  /// Notifies every paint pass when [injectedBlobs] changes; the passes'
+  /// resolvers re-read the live list keyed by its revision.
+  final _InjectionNotifier _injections = _InjectionNotifier();
+
+  /// Whether the layer's overlay subtree (glass/fill, mask, shine) exists;
+  /// mirrors the short-circuit in [build].
+  bool get _overlayLive =>
+      widget.blobBuilder != null ||
+      widget.blobs.isNotEmpty ||
+      injectedBlobs.isNotEmpty;
+
+  /// Replaces [prev] with [cur] in [injectedBlobs] and repaints the glass.
+  ///
+  /// A null [prev] (or one that's no longer in the list) inserts [cur]; a null
+  /// [cur] removes [prev]; both null does nothing. [prev] is matched by
+  /// identity rather than equality, so callers hand back the instance they
+  /// last passed and two injectors submitting equal blobs can't take each
+  /// other's slot.
+  ///
+  /// Fine to call every frame of an animation, and — being a repaint-level
+  /// change, not a setState — also fine during build (a descendant's
+  /// [State.didUpdateWidget], say): it only marks the layer's paint passes
+  /// dirty, and they re-resolve the blob list when they next paint. Don't
+  /// call it from a paint method (the passes read the list while painting).
+  ///
+  /// The one structural exception: on a layer whose [GlassLayer.blobs] is
+  /// empty with no [GlassLayer.blobBuilder], the first injected blob (and
+  /// the removal of the last) toggles the whole overlay subtree, which *is*
+  /// a rebuild — done immediately between frames, or deferred one frame
+  /// when this is called mid-build.
+  void replaceBlob(GlassBlob? prev, GlassBlob? cur) {
+    if (prev == null && cur == null) return;
+    final int i =
+        prev == null ? -1 : injectedBlobs.indexWhere((b) => identical(b, prev));
+    final hadOverlay = _overlayLive;
+    if (i < 0) {
+      if (cur == null) return;
+      injectedBlobs.add(cur);
+    } else if (cur == null) {
+      injectedBlobs.removeAt(i);
+    } else {
+      injectedBlobs[i] = cur;
+    }
+    if (_overlayLive == hadOverlay) {
+      _injections.bump();
+      return;
+    }
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      setState(() {});
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -228,6 +334,7 @@ class _GlassLayerState extends State<GlassLayer> {
     _fillShader?.dispose();
     _maskShader?.dispose();
     _shineShader?.dispose();
+    _injections.dispose();
     super.dispose();
   }
 
@@ -293,6 +400,9 @@ class _GlassLayerState extends State<GlassLayer> {
         options: widget.options,
         dpr: dpr,
         shineTilt: shineTilt,
+        repaint: shineTilt == null
+            ? _injections
+            : Listenable.merge([_injections, shineTilt]),
       ),
     );
   }
@@ -300,7 +410,9 @@ class _GlassLayerState extends State<GlassLayer> {
   @override
   Widget build(BuildContext context) {
     if (!_GlassPrograms.loaded ||
-        (widget.blobBuilder == null && widget.blobs.isEmpty)) {
+        (widget.blobBuilder == null &&
+            widget.blobs.isEmpty &&
+            injectedBlobs.isEmpty)) {
       return widget.child;
     }
 
@@ -309,9 +421,11 @@ class _GlassLayerState extends State<GlassLayer> {
     // Blobs are only needed at paint time, and only then is the layer's true
     // size (the size the child chose in layout) known — so nothing is packed
     // here; every pass resolves through this shared per-build resolver from
-    // its paint method instead.
-    final resolver =
-        _BlobResolver(widget.blobs, widget.blobBuilder, widget.options);
+    // its paint method instead. The live [injectedBlobs] is handed over by
+    // reference: its changes arrive through [_injections] as repaints, not
+    // rebuilds, so the resolver re-reads it keyed by the revision.
+    final resolver = _BlobResolver(widget.blobs, injectedBlobs, _injections,
+        widget.blobBuilder, widget.options);
 
     Widget overlay;
     if (glass) {
@@ -322,14 +436,19 @@ class _GlassLayerState extends State<GlassLayer> {
         options: widget.options,
         dpr: dpr,
         viewSize: view.physicalSize / view.devicePixelRatio,
+        repaint: _injections,
       );
     } else {
       overlay = _flatPass(_fillShader ??= _GlassPrograms.flat!.fragmentShader(),
           resolver, 0, dpr);
     }
 
-    final maskedChild = ShaderMask(
+    final maskedChild = _RepaintableShaderMask(
       blendMode: BlendMode.dstIn,
+      // Injected-blob changes must reach the mask as repaints: a plain
+      // ShaderMask only re-evaluates its callback when something else marks
+      // it dirty, and mutating uniforms in place marks nothing.
+      repaint: _injections,
       shaderCallback: (maskBounds) {
         // A paint-time hook: maskBounds is the child's laid-out rect.
         final shader = _maskShader ??= _GlassPrograms.flat!.fragmentShader();
@@ -400,6 +519,7 @@ class _GlassBackdrop extends SingleChildRenderObjectWidget {
     required this.options,
     required this.dpr,
     required this.viewSize,
+    required this.repaint,
   }) : super(child: const SizedBox.expand());
 
   final ui.FragmentShader shader;
@@ -411,9 +531,13 @@ class _GlassBackdrop extends SingleChildRenderObjectWidget {
   /// to trim the filter clip to the render target at paint time.
   final Size viewSize;
 
+  /// Fires on injected-blob changes; the render object repaints without any
+  /// rebuild.
+  final Listenable repaint;
+
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _RenderGlassBackdrop(shader, resolver, options, dpr, viewSize);
+      _RenderGlassBackdrop(shader, resolver, options, dpr, viewSize, repaint);
 
   @override
   void updateRenderObject(
@@ -427,13 +551,15 @@ class _GlassBackdrop extends SingleChildRenderObjectWidget {
       ..options = options
       ..dpr = dpr
       ..viewSize = viewSize
+      ..repaint = repaint
       ..markNeedsPaint();
   }
 }
 
 class _RenderGlassBackdrop extends RenderProxyBox {
-  _RenderGlassBackdrop(
-      this.shader, this.resolver, this.options, this.dpr, this.viewSize);
+  _RenderGlassBackdrop(this.shader, this.resolver, this.options, this.dpr,
+      this.viewSize, Listenable repaint)
+      : _repaint = repaint;
 
   ui.FragmentShader shader;
   _BlobResolver resolver;
@@ -441,10 +567,30 @@ class _RenderGlassBackdrop extends RenderProxyBox {
   double dpr;
   Size viewSize;
 
+  Listenable _repaint;
+  set repaint(Listenable value) {
+    if (identical(value, _repaint)) return;
+    if (attached) _repaint.removeListener(markNeedsPaint);
+    _repaint = value;
+    if (attached) _repaint.addListener(markNeedsPaint);
+  }
+
   ClipRectLayer? _clipLayer;
 
   @override
   bool get alwaysNeedsCompositing => true;
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _repaint.addListener(markNeedsPaint);
+  }
+
+  @override
+  void detach() {
+    _repaint.removeListener(markNeedsPaint);
+    super.detach();
+  }
 
   @override
   void dispose() {
@@ -552,8 +698,9 @@ class _FlatBlobPainter extends CustomPainter {
     required this.mode,
     required this.options,
     required this.dpr,
+    required Listenable repaint,
     this.shineTilt,
-  }) : super(repaint: shineTilt);
+  }) : super(repaint: repaint);
 
   final ui.FragmentShader shader;
   final _BlobResolver resolver;
@@ -595,5 +742,66 @@ class _FlatBlobPainter extends CustomPainter {
         oldDelegate.shineTilt != shineTilt ||
         oldDelegate.dpr != dpr ||
         _BlobResolver.repaintNeeded(oldDelegate.resolver, resolver);
+  }
+}
+
+/// A [ShaderMask] that additionally repaints when [repaint] fires.
+///
+/// The mask's uniforms are mutated in place on the shared shader instance,
+/// which marks nothing dirty by itself, and a plain [ShaderMask] only
+/// re-evaluates its callback when its render object repaints — so without
+/// this hook an injected-blob change would update every pass except the
+/// child mask.
+class _RepaintableShaderMask extends ShaderMask {
+  const _RepaintableShaderMask({
+    required super.shaderCallback,
+    required super.blendMode,
+    required this.repaint,
+    super.child,
+  });
+
+  final Listenable repaint;
+
+  @override
+  RenderShaderMask createRenderObject(BuildContext context) =>
+      _RenderRepaintableShaderMask(
+        shaderCallback: shaderCallback,
+        blendMode: blendMode,
+        repaint: repaint,
+      );
+
+  @override
+  void updateRenderObject(
+      BuildContext context, covariant _RenderRepaintableShaderMask renderObject) {
+    super.updateRenderObject(context, renderObject);
+    renderObject.repaint = repaint;
+  }
+}
+
+class _RenderRepaintableShaderMask extends RenderShaderMask {
+  _RenderRepaintableShaderMask({
+    required super.shaderCallback,
+    required super.blendMode,
+    required this._repaint,
+  });
+
+  Listenable _repaint;
+  set repaint(Listenable value) {
+    if (identical(value, _repaint)) return;
+    if (attached) _repaint.removeListener(markNeedsPaint);
+    _repaint = value;
+    if (attached) _repaint.addListener(markNeedsPaint);
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _repaint.addListener(markNeedsPaint);
+  }
+
+  @override
+  void detach() {
+    _repaint.removeListener(markNeedsPaint);
+    super.detach();
   }
 }

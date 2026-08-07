@@ -46,6 +46,32 @@ const double _tau = math.pi * 2;
 /// The exit lift is designed for plain (hole-less, full-sweep) blobs; a ring
 /// segment's capped-arc field does not reduce to the point field at zero
 /// radii, so animate its hole/sweep closed first.
+///
+/// ## Distortion blobs
+///
+/// A blob with non-zero [distortion] is never rendered itself — no fill and
+/// no merge of its own. Instead it displaces the surfaces of the *other*
+/// blobs near it: everything within [distortionRange] of its shape is
+/// pushed outward by up to [distortion] logical pixels (negative values
+/// dent inward). Any blob shape works as the distorter — a line blob
+/// dragged under a finger bulges a panel edge along its whole length.
+///
+/// Its [tint] blends into the surfaces it displaces at the same kernel
+/// weight as the push: full strength at the distorter's surface, fading to
+/// nothing at [distortionRange]. A distorter's tint always applies over the
+/// merged tint of the rendered blobs, regardless of list order (packing
+/// moves distorters to the end; among several distorters, later ones win).
+/// Like any blob tint this includes blending *toward transparency*, so a
+/// distorter that should push without coloring carries its neighbors'
+/// tint, not a transparent one (which would locally fade theirs).
+///
+/// When [distortion] exceeds the gap to a neighbor's surface, the pushed
+/// surface reaches the distorter and forms a liquid bridge toward it; keep
+/// [distortion] below the working distance if that reach-out is unwanted.
+/// To animate one away, animate [distortion] to zero — at zero the blob has
+/// exactly no influence and can be dropped from the list with no visual
+/// change. (The exit lift also works: the push fades out once the lift
+/// passes [distortionRange].)
 class GlassBlob {
   const GlassBlob({
     required this.center,
@@ -57,7 +83,10 @@ class GlassBlob {
     this.holeRadius = double.negativeInfinity,
     this.startAngle = 0,
     this.endAngle = _tau,
-  });
+    this.distortion = 0,
+    this.distortionRange = 0,
+  }) : assert(distortion == 0 || distortionRange > 0,
+            'A distortion blob needs a positive distortionRange');
 
   /// Creates a pill-shaped blob rendered as a round-capped line of the given
   /// [thickness] running between [p1] and [p2].
@@ -79,6 +108,8 @@ class GlassBlob {
     double holeRadius = double.negativeInfinity,
     double startAngle = 0,
     double endAngle = _tau,
+    double distortion = 0,
+    double distortionRange = 0,
   }) {
     final Offset delta = p2 - p1;
     final double length = delta.distance;
@@ -91,6 +122,8 @@ class GlassBlob {
       holeRadius: holeRadius,
       startAngle: startAngle,
       endAngle: endAngle,
+      distortion: distortion,
+      distortionRange: distortionRange,
     );
   }
 
@@ -141,6 +174,17 @@ class GlassBlob {
   /// the sector clip.
   final double endAngle;
 
+  /// How far this blob pushes the surfaces of the *other* blobs outward, in
+  /// logical pixels; `0` (the default) is an ordinary rendered blob. Any
+  /// non-zero value turns the blob into a pure distorter instead — see
+  /// "Distortion blobs" in the class docs. Negative values dent inward.
+  final double distortion;
+
+  /// Distance past this blob's surface over which [distortion] fades to
+  /// zero, in logical pixels. Must be positive when [distortion] is set;
+  /// meaningless (and ignored) otherwise.
+  final double distortionRange;
+
   @override
   bool operator ==(Object other) {
     return other is GlassBlob &&
@@ -152,7 +196,9 @@ class GlassBlob {
         other.cornerContinuity == cornerContinuity &&
         other.holeRadius == holeRadius &&
         other.startAngle == startAngle &&
-        other.endAngle == endAngle;
+        other.endAngle == endAngle &&
+        other.distortion == distortion &&
+        other.distortionRange == distortionRange;
   }
 
   @override
@@ -166,5 +212,7 @@ class GlassBlob {
     holeRadius,
     startAngle,
     endAngle,
+    distortion,
+    distortionRange,
   );
 }

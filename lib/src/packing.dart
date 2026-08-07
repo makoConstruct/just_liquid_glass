@@ -19,7 +19,7 @@ const int floatsPerBlob = 20;
 /// [ 4] radii.x    [ 5] radii.y    [ 6] cornerRadius  [ 7] holeRadius (0 = none)
 /// [ 8] axis.x     [ 9] axis.y     [10] cos(halfAp) (-2 = full)  [11] sin(halfAp)
 /// [12] tint.r     [13] tint.g     [14] tint.b        [15] tint.a
-/// [16] cornerContinuity            [17..19] reserved (0)
+/// [16] cornerContinuity  [17] distortion  [18] distortionRange  [19] reserved
 /// ```
 /// A negative `[11]` marks a circular ring segment (circular radii, fully
 /// rounded, with a hole and a sector): the shader renders those as an arc
@@ -29,12 +29,30 @@ const int floatsPerBlob = 20;
 /// ("squircle") corner (1); see [GlassBlob.cornerContinuity] and sdBlob's
 /// corner term. Ring segments are always circular regardless of continuity
 /// (see [isCappedArc]).
+///
+/// A non-zero `[17]` marks a distortion blob: the shader excludes it from
+/// the smooth-min merge (so it never renders) and instead subtracts a bump
+/// of up to `[17]` from the merged field, fading over `[18]` past the blob's
+/// surface — and mixes its tint at that same kernel weight; see
+/// [GlassBlob.distortion].
 Float32List packBlobs(List<GlassBlob> blobs) {
   assert(blobs.length <= maxBlobs,
       'GlassLayer supports at most $maxBlobs blobs, got ${blobs.length}');
-  final data = Float32List(blobs.length * floatsPerBlob);
-  for (var i = 0; i < blobs.length; i++) {
-    final blob = blobs[i];
+  // Distortion blobs pack after every rendered blob regardless of list
+  // position: the shader's tint fold is sequential, and a rendered blob
+  // processed after a distorter remixes at h ~ 1 wherever it exists,
+  // wiping the distorter's tint. Everything else about a distorter is
+  // order-independent (its merge is a no-op and its bump is a sum), so the
+  // stable partition changes nothing but the tint.
+  final ordered = [
+    for (final blob in blobs)
+      if (blob.distortion == 0) blob,
+    for (final blob in blobs)
+      if (blob.distortion != 0) blob,
+  ];
+  final data = Float32List(ordered.length * floatsPerBlob);
+  for (var i = 0; i < ordered.length; i++) {
+    final blob = ordered[i];
     final o = i * floatsPerBlob;
 
     data[o + 0] = blob.center.dx;
@@ -82,10 +100,12 @@ Float32List packBlobs(List<GlassBlob> blobs) {
 
     // Suppressed at corner <= 0 so sharp rectangles and exit-lift blobs keep
     // the canonical Euclidean field; the two corner norms only agree inside
-    // the corner square, which those cases don't have. [17..19] stay 0.
+    // the corner square, which those cases don't have.
     data[o + 16] = corner > 0
         ? blob.cornerContinuity.clamp(0.0, 1.0).toDouble()
         : 0;
+    data[o + 17] = blob.distortion;
+    data[o + 18] = math.max(blob.distortionRange, 0); // [19] stays 0
   }
   return data;
 }

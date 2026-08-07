@@ -105,37 +105,55 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
   return d;
 }
 
+// Distortion blobs (extra.y != 0) run the exact same loop body as rendered
+// blobs; see the matching comment in glass.frag for how the lifted merge
+// distance and the subtracted bump work.
+
 float sceneD(vec2 p) {
   float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
+      vec4 extra = uBlobs[i * 5 + 4];
       float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], uBlobs[i * 5 + 4].x);
-      float h = clamp(0.5 + 0.5 * (d - di) / k, 0.0, 1.0);
-      d = mix(d, di, h) - k * h * (1.0 - h);
+          uBlobs[i * 5 + 2], extra.x);
+      float dm = extra.y == 0.0 ? di : 4e4;
+      float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
+      d = mix(d, dm, h) - k * h * (1.0 - h);
+      float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
+      bump += extra.y * (t * t * (3.0 - 2.0 * t));
     }
   }
-  return d;
+  return d - bump;
 }
 
 float scene(vec2 p, out vec4 tint) {
   float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float bump = 0.0;
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
+      vec4 extra = uBlobs[i * 5 + 4];
       float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], uBlobs[i * 5 + 4].x);
-      float h = clamp(0.5 + 0.5 * (d - di) / k, 0.0, 1.0);
-      d = mix(d, di, h) - k * h * (1.0 - h);
+          uBlobs[i * 5 + 2], extra.x);
+      float dm = extra.y == 0.0 ? di : 4e4;
+      float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
+      d = mix(d, dm, h) - k * h * (1.0 - h);
+      float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
+      float s = t * t * (3.0 - 2.0 * t);
+      bump += extra.y * s;
       // ease-in-out so the tint gradient is C1 at the blend-band edges;
-      // geometry must keep linear h (polynomial smin assumes it)
-      float hc = h * h * (3.0 - 2.0 * h);
+      // geometry must keep linear h (polynomial smin assumes it).
+      // Distortion blobs tint at their kernel weight instead — the same
+      // weight that drives the push (their h is exactly 0, and rendered
+      // blobs never take the s arm, whose t is meaningless for them).
+      float hc = extra.y == 0.0 ? h * h * (3.0 - 2.0 * h) : s;
       tint = mix(tint, uBlobs[i * 5 + 3], hc);
     }
   }
-  return d;
+  return d - bump;
 }
 
 void main() {

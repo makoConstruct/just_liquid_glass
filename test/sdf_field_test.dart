@@ -206,6 +206,228 @@ void main() {
         reason: 'half continuity should stay inside the full squircle');
   });
 
+  group('distortion blobs', () {
+    // Shared geometry: the radius-55 circle from the first test (edge at
+    // x = 155 on the y = 100 scanline) with a small distorter to its right.
+    const neighbor = GlassBlob(
+      center: ui.Offset(100, 100),
+      radii: ui.Size(55, 55),
+      tint: ui.Color(0xFF4FC3F7),
+    );
+
+    test('pushes a neighbor surface outward without rendering itself',
+        () async {
+      final image = await _renderBlobs([
+        neighbor,
+        // Red tint: blends into the displaced surface at the kernel weight,
+        // never anywhere the kernel has faded out.
+        const GlassBlob(
+          center: ui.Offset(185, 100),
+          radii: ui.Size(10, 10),
+          distortion: 12,
+          distortionRange: 40,
+          tint: ui.Color(0xFFFF0000),
+        ),
+      ]);
+      final data =
+          (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+
+      // Pixels outside the undistorted silhouette (the first test pins them
+      // at alpha 0) are now opaque: at (158.5, 100.5) the field is +3.5 and
+      // the bump is 12 * kernel(16.5/40) = 7.6, so ~ -4.1; at (162.5, 100.5)
+      // +7.5 against a bump of 9.2, so ~ -1.7. Both clear the AA band.
+      expect(_alphaAt(data, 158, 100, 200), 255,
+          reason: 'surface should be pushed outward toward the distorter');
+      expect(_alphaAt(data, 162, 100, 200), 255);
+
+      // The far side of the circle is beyond the range: untouched.
+      expect(_alphaAt(data, 42, 100, 200), 0);
+      expect(_alphaAt(data, 50, 100, 200), 255);
+
+      // The distorter itself does not render: at its center the merged
+      // field is ~30 and the full-strength bump only 12.
+      expect(_alphaAt(data, 185, 100, 200), 0,
+          reason: 'distortion blob must not render itself');
+
+      // Its tint mixes in at the kernel weight: the bulged pixel sits at
+      // s = 0.63, so cyan -> red lands around (190, 72) — clearly
+      // red-shifted — while the far interior (kernel weight 0) stays cyan.
+      final o = (100 * 200 + 158) * 4;
+      expect(data.getUint8(o), greaterThan(150), reason: 'red at the bulge');
+      expect(data.getUint8(o + 1), lessThan(120), reason: 'green at the bulge');
+      final c = (100 * 200 + 100) * 4;
+      expect(data.getUint8(c), lessThan(100), reason: 'red at the center');
+      expect(data.getUint8(c + 1), greaterThan(150),
+          reason: 'green at the center');
+    });
+
+    test('negative distortion dents a neighbor inward', () async {
+      final image = await _renderBlobs([
+        neighbor,
+        const GlassBlob(
+          center: ui.Offset(185, 100),
+          radii: ui.Size(10, 10),
+          distortion: -12,
+          distortionRange: 40,
+          tint: ui.Color(0xFFFF0000),
+        ),
+      ]);
+      final data =
+          (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+
+      // (153.5, 100.5) is 1.5px inside the plain circle but the dent lifts
+      // the field by 5.3 there; deeper in at (140.5, 100.5) the kernel has
+      // nearly faded (bump 0.5 against a field of -14.5).
+      expect(_alphaAt(data, 153, 100, 200), 0,
+          reason: 'edge should be dented inward');
+      expect(_alphaAt(data, 140, 100, 200), 255,
+          reason: 'dent should stay local to the facing edge');
+    });
+
+    test('out of range, the image is bit-identical to the blob being absent',
+        () async {
+      // The distorter's surface sits 20px past the neighbor's edge, so a
+      // range of 15 keeps the kernel's support 5px clear of the AA band:
+      // the bump is identically zero everywhere coverage is nonzero, and
+      // everywhere else both images saturate to exact transparency.
+      final alone = await _renderBlobs([neighbor]);
+      final distorted = await _renderBlobs([
+        neighbor,
+        const GlassBlob(
+          center: ui.Offset(185, 100),
+          radii: ui.Size(10, 10),
+          distortion: 12,
+          distortionRange: 15,
+          tint: ui.Color(0xFFFF0000),
+        ),
+      ]);
+      final a = (await alone.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      final b =
+          (await distorted.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      expect(b.buffer.asUint8List(), equals(a.buffer.asUint8List()));
+    });
+
+    test('distorter tint survives being listed before the rendered blob',
+        () async {
+      // The shader's tint fold is sequential, so without the packing
+      // reorder a rendered blob after the distorter would wipe its tint
+      // (while the order-independent push kept working) — the confusing
+      // "distortion but no tint" failure. Both orders must render
+      // identically.
+      const distorter = GlassBlob(
+        center: ui.Offset(185, 100),
+        radii: ui.Size(10, 10),
+        distortion: 12,
+        distortionRange: 40,
+        tint: ui.Color(0xFFFF0000),
+      );
+      final last = await _renderBlobs([neighbor, distorter]);
+      final first = await _renderBlobs([distorter, neighbor]);
+      final a = (await last.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      final b = (await first.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      expect(b.buffer.asUint8List(), equals(a.buffer.asUint8List()));
+
+      // And the tint is actually present, not merely consistent.
+      final o = (100 * 200 + 158) * 4;
+      expect(b.getUint8(o), greaterThan(150), reason: 'red at the bulge');
+    });
+
+    test('distorter tint also comes through the glass shader', () async {
+      // Same scene as the flat-mode tint probe, but rendered with
+      // glass.frag driven directly as a canvas shader (the golden-test
+      // harness): a solid gray backdrop, refraction/blur/edgeTint off, so
+      // the output color is mix(gray, tint.rgb, tint.a) and tint blending
+      // is cleanly measurable.
+      final program = await ui.FragmentProgram.fromAsset('shaders/glass.frag');
+      final shader = program.fragmentShader();
+
+      const w = 220, h = 200;
+      final bgRecorder = ui.PictureRecorder();
+      ui.Canvas(bgRecorder).drawRect(
+        const ui.Rect.fromLTWH(0, 0, 220, 200),
+        ui.Paint()..color = const ui.Color(0xFF808080),
+      );
+      final backdrop = await bgRecorder.endRecording().toImage(w, h);
+
+      final blobs = [
+        const GlassBlob(
+          center: ui.Offset(100, 100),
+          radii: ui.Size(55, 55),
+          tint: ui.Color(0xB34FC3F7),
+        ),
+        const GlassBlob(
+          center: ui.Offset(185, 100),
+          radii: ui.Size(10, 10),
+          distortion: 12,
+          distortionRange: 40,
+          tint: ui.Color(0xFFFF0000),
+        ),
+      ];
+      shader.setImageSampler(0, backdrop);
+      shader.setFloat(0, w.toDouble()); // uSize
+      shader.setFloat(1, h.toDouble());
+      shader.setFloat(2, 1); // uDpr
+      shader.setFloat(3, blobs.length.toDouble());
+      shader.setFloat(4, 4); // uBlendRadius
+      shader.setFloat(5, 17); // uBevelThickness
+      shader.setFloat(6, 0); // uRefraction
+      shader.setFloat(7, 0); // uOrigin
+      shader.setFloat(8, 0);
+      shader.setFloat(9, 0); // uClip: whole canvas
+      shader.setFloat(10, 0);
+      shader.setFloat(11, w.toDouble());
+      shader.setFloat(12, h.toDouble());
+      for (var i = 0; i < 4; i++) {
+        shader.setFloat(13 + i, 0); // uEdgeTint: disabled
+      }
+      final packed = packBlobs(blobs);
+      for (var i = 0; i < packed.length; i++) {
+        shader.setFloat(17 + i, packed[i]);
+      }
+
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawRect(
+        const ui.Rect.fromLTWH(0, 0, 220, 200),
+        ui.Paint()..shader = shader,
+      );
+      final image = await recorder.endRecording().toImage(w, h);
+      final data =
+          (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+
+      // The bulge exists (opaque past the plain silhouette) and is
+      // red-shifted; the interior far from the distorter keeps the
+      // neighbor's cyan-over-gray; the distorter itself renders nothing.
+      expect(_alphaAt(data, 158, 100, w), 255);
+      final o = (100 * w + 158) * 4;
+      expect(data.getUint8(o), greaterThan(150), reason: 'red at the bulge');
+      expect(data.getUint8(o + 1), lessThan(120),
+          reason: 'green at the bulge');
+      final c = (100 * w + 100) * 4;
+      expect(data.getUint8(c), lessThan(100), reason: 'red at the center');
+      expect(data.getUint8(c + 1), greaterThan(150),
+          reason: 'green at the center');
+      expect(_alphaAt(data, 185, 100, w), 0,
+          reason: 'distorter must not render in glass mode either');
+    });
+
+    test('a distortion blob alone renders nothing', () async {
+      final image = await _renderBlobs([
+        const GlassBlob(
+          center: ui.Offset(100, 100),
+          radii: ui.Size(40, 40),
+          distortion: 12,
+          distortionRange: 40,
+          tint: ui.Color(0xFFFF0000),
+        ),
+      ]);
+      final data =
+          (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      for (final x in [60, 100, 140]) {
+        expect(_alphaAt(data, x, 100, 200), 0, reason: 'pixel x=$x');
+      }
+    });
+  });
+
   test('continuous partial corner matches circular on the flat edge',
       () async {
     // Off the corner region entirely (well within a long flat edge), a

@@ -73,7 +73,9 @@ uniform vec4 uEdgeTint;        // 13..16
 //   [2] sectorAxis.x, sectorAxis.y, cos(halfAperture) (-2 = full circle),
 //       sin(halfAperture) (negative = circular ring segment with round caps)
 //   [3] tint r, g, b, a
-//   [4] cornerContinuity (0 circular .. 1 squircle), rest reserved (0)
+//   [4] cornerContinuity (0 circular .. 1 squircle),
+//       distortion (!= 0 marks a non-rendered distortion blob),
+//       distortionRange (falloff distance), reserved (0)
 uniform vec4 uBlobs[80];
 
 // Set by the engine: the backdrop, pre-blurred by the composed inner
@@ -157,37 +159,65 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
   return d;
 }
 
+// Distortion blobs (extra.y != 0) run the exact same loop body as rendered
+// blobs — no second code path: their merge distance is lifted out of range,
+// which clamps the smin weight h to exactly 0, making the merge a bitwise
+// no-op. Their geometric contribution is the bump: a smooth kernel of the
+// blob's own field, full strength inside its surface, fading to 0 at
+// distortionRange (extra.z) — subtracted from the merged field at the end,
+// it pushes every nearby surface outward by up to extra.y px (negative
+// dents inward). In scene() their tint still participates, mixed at that
+// same kernel weight, so a distorter colors the surfaces it displaces (a
+// distorter that should color nothing carries its neighbors' tint — like
+// any blob tint, a transparent one fades what it covers). Rendered blobs
+// have extra.y == 0, so their bump term is zero. The lift constant stays
+// well above the 1e4 sentinel but far from the 1e9 quantization cliff.
+
 float sceneD(vec2 p) {
   float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
+      vec4 extra = uBlobs[i * 5 + 4];
       float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], uBlobs[i * 5 + 4].x);
-      float h = clamp(0.5 + 0.5 * (d - di) / k, 0.0, 1.0);
-      d = mix(d, di, h) - k * h * (1.0 - h);
+          uBlobs[i * 5 + 2], extra.x);
+      float dm = extra.y == 0.0 ? di : 4e4;
+      float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
+      d = mix(d, dm, h) - k * h * (1.0 - h);
+      float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
+      bump += extra.y * (t * t * (3.0 - 2.0 * t));
     }
   }
-  return d;
+  return d - bump;
 }
 
 float scene(vec2 p, out vec4 tint) {
   float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float bump = 0.0;
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
+      vec4 extra = uBlobs[i * 5 + 4];
       float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], uBlobs[i * 5 + 4].x);
-      float h = clamp(0.5 + 0.5 * (d - di) / k, 0.0, 1.0);
-      d = mix(d, di, h) - k * h * (1.0 - h);
+          uBlobs[i * 5 + 2], extra.x);
+      float dm = extra.y == 0.0 ? di : 4e4;
+      float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
+      d = mix(d, dm, h) - k * h * (1.0 - h);
+      float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
+      float s = t * t * (3.0 - 2.0 * t);
+      bump += extra.y * s;
       // ease-in-out so the tint gradient is C1 at the blend-band edges;
-      // geometry must keep linear h (polynomial smin assumes it)
-      float hc = h * h * (3.0 - 2.0 * h);
+      // geometry must keep linear h (polynomial smin assumes it).
+      // Distortion blobs tint at their kernel weight instead — the same
+      // weight that drives the push (their h is exactly 0, and rendered
+      // blobs never take the s arm, whose t is meaningless for them).
+      float hc = extra.y == 0.0 ? h * h * (3.0 - 2.0 * h) : s;
       tint = mix(tint, uBlobs[i * 5 + 3], hc);
     }
   }
-  return d;
+  return d - bump;
 }
 
 // ---------------------------------------------------------------------------

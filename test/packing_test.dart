@@ -265,6 +265,52 @@ void main() {
     expect(isCappedArc(blob), isFalse);
   });
 
+  test('distortion and range pack into their slots, defaulting to 0', () {
+    final data = packBlobs([
+      const GlassBlob(center: Offset.zero, radii: Size(10, 10), tint: white),
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(10, 10),
+        distortion: 12,
+        distortionRange: 40,
+        tint: white,
+      ),
+    ]);
+    expect(data[17], 0);
+    expect(data[18], 0);
+    expect(data[floatsPerBlob + 17], 12);
+    expect(data[floatsPerBlob + 18], 40);
+  });
+
+  test('distortion blobs pack after rendered blobs regardless of order', () {
+    final data = packBlobs([
+      const GlassBlob(
+        center: Offset(1, 0),
+        radii: Size(10, 10),
+        distortion: 12,
+        distortionRange: 40,
+        tint: white,
+      ),
+      const GlassBlob(center: Offset(2, 0), radii: Size(10, 10), tint: white),
+    ]);
+    // The rendered blob (center.x 2) lands in slot 0, the distorter after.
+    expect(data[0], 2);
+    expect(data[17], 0);
+    expect(data[floatsPerBlob + 0], 1);
+    expect(data[floatsPerBlob + 17], 12);
+  });
+
+  test('a distortion blob without a positive range asserts', () {
+    expect(
+        () => GlassBlob(
+              center: Offset.zero,
+              radii: const Size(10, 10),
+              distortion: 12,
+              tint: white,
+            ),
+        throwsA(isA<AssertionError>()));
+  });
+
   test('rejects more than maxBlobs', () {
     final blobs = List.generate(
       maxBlobs + 1,

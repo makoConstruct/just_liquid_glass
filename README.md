@@ -5,15 +5,17 @@ A form of liquid glass for Flutter: blobby, SDF-merged glass shapes with refract
 
 It's entirely vibecoded (Fable 5), but it's been tested and iterated and refined and used, and is probably very stable, given the defensive approach we took. Fable was instructed to learn from other flutter libraries and take an approach that dodges some of flutter's bugs, a standout decision resulting from that was to avoid using intermediate textures so animating blobs wouldn't churn GPU memory. The full list is in [Bugs dodged](#bugs-dodged) below.
 
-We aspire to look like apple's implementation, by default, we're probably fairly close at this point.
+We're currently not trying very hard to very closely imitate apple's default config, since they set blur and opacity way too low, which looks tacky and isn't compatible with maintaining good visual contrast, but we'll support it as a default if anyone can be bothered doing the checking and tuning.
 
 Improvements over flutter_liquid_glass:
 
-- It's possible to fade shine to 0/to interpolate all the way to flatness
+- It's possible to interpolate to flatness, where you just get a shape, without refraction or shine.
 
 - The blob shapes are quite flexible, they can each have corner radius, a hole, start and end angle, and different colors and opacities (when blobs touch, colors blend smoothly from one to the other).
 
 - Blobs can be animated out by shrinking (see "Animating a blob out" in `GlassBlob`'s docs) without crashing. `flutter_liquid_glass` throws when a shape's layout goes to zero ([whynotmake-it#149](https://github.com/whynotmake-it/flutter_liquid_glass/issues/149), open).
+
+- Shaped bulges can be animated on keypress using distortion and distortionRange parameters
 
 - Shapes can be rotated
 
@@ -21,13 +23,13 @@ Improvements over flutter_liquid_glass:
 
 Non-improvements:
 
-- Doesn't support arbitrary shapes, your shapes must compose from our round-capped segments of roundrect-toruses.
+- Doesn't support arbitrary vector paths, your shapes must compose from our round-capped segments of roundrect-toruses and pills, but that's still a lot of shapes.
 
 - Arbitrarily, the number of blobs supported per layer is currently 16.
 
-Flaws that anyone could fix instantly if they wanted to:
+Flaws that anyone could fix immediately if they wanted to:
 
-- There are currently no widgets that automate sizing, just haven't needed them yet. It would be easy to build those using `GlassLayer`'s recently added `List<GlassBlob> Function(Size size)? blobBuilder` parameter.
+- There are currently no widgets that automatically shape the blob to match the child widget, just haven't needed them yet. It would be easy to build those using `GlassLayer`'s recently added `List<GlassBlob> Function(Size size)? blobBuilder` parameter (which is called after layout, once size is known).
 
 - No chromatic aberration. (it could probably be done in just one prompt, mako just didn't want it (it's not actually good!), but would accept it, even as the default setting, if someone else wants to add it)
 
@@ -35,9 +37,11 @@ Flaws that anyone could fix instantly if they wanted to:
 
 - Minor: Blur is applied before refraction instead of after. The ideal is probably apply blur to a varying degree depending on the ray length, but probably nobody is doing that. Fixing this probably wont be feasible until flutter's issues with use of intermediate textures are resolved.
 
-Minor features:
+Other features:
 
-- You can lerp between apple-style continuous corners and round corners.
+- You can *lerp between* apple-style continuous corners and round corners.
+
+- There's a GlassSwell widget which you can use to make buttons that create a bulge in the glass of the parent when pressed.
 
 **Everything below this line was written by Fable but has been reviewed.**
 
