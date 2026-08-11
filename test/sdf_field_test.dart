@@ -17,7 +17,7 @@ Future<ui.Image> _renderBlobs(List<GlassBlob> blobs) async {
   shader.setFloat(6, 1);
   final packed = packBlobs(blobs);
   for (var i = 0; i < packed.length; i++) {
-    shader.setFloat(7 + i, packed[i]);
+    shader.setFloat(11 + i, packed[i]);
   }
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
@@ -61,7 +61,7 @@ void main() {
     shader.setFloat(6, 1); // bevelThickness (unused in fill mode)
     final packed = packBlobs(blobs);
     for (var i = 0; i < packed.length; i++) {
-      shader.setFloat(7 + i, packed[i]);
+      shader.setFloat(11 + i, packed[i]);
     }
 
     final recorder = ui.PictureRecorder();
@@ -110,7 +110,7 @@ void main() {
       shader.setFloat(6, 1); // bevelThickness (unused in fill mode)
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(7 + i, packed[i]);
+        shader.setFloat(11 + i, packed[i]);
       }
       final recorder = ui.PictureRecorder();
       ui.Canvas(recorder).drawRect(
@@ -147,37 +147,11 @@ void main() {
     expect(lifted, equals(alone));
   });
 
-  test('continuous full-corner blob renders as a squircle, not a circle',
-      () async {
-    final image = await _renderBlobs([
-      const GlassBlob(
-        center: ui.Offset(100, 100),
-        radii: ui.Size(60, 60),
-        cornerRadius: 60,
-        cornerContinuity: 1,
-        tint: ui.Color(0xFF4FC3F7),
-      ),
-    ]);
-    final data =
-        (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
-
-    // Axis point: same extent as a circle of radius 60 (the corner formula
-    // is exact on-axis regardless of exponent).
-    expect(_alphaAt(data, 160, 100, 200), lessThan(128));
-    expect(_alphaAt(data, 159, 100, 200), greaterThan(200));
-
-    // Diagonal point q=(48,48): a circle of r=60 has |q|=67.9 there, ~8px
-    // outside (well past the AA band). The n=4 superellipse |x|^4+|y|^4=r^4
-    // reaches further out on the diagonal than the inscribed circle (it
-    // interpolates toward a square as n grows past 2): corner value is
-    // 48*2^(1/4) = 57.08, i.e. d = -2.9, safely inside. So (148,148) should
-    // be opaque despite being outside the radius-60 circle -- the defining
-    // visual trait of a "fuller" continuous corner.
-    expect(_alphaAt(data, 148, 148, 200), greaterThan(200),
-        reason: 'squircle diagonal should bulge past a same-radius circle');
-  });
-
-  test('fractional continuity morphs the silhouette between the two', () async {
+  test('continuous full-corner blob stays a circle', () async {
+    // Impeller's rounded superellipse degenerates to a true circle once the
+    // radius fills the box, so continuity must be a no-op here -- the
+    // opposite of a squircle. Anything else would also break the capped-arc
+    // path, which assumes exact circular symmetry (see isCappedArc).
     GlassBlob blob(double t) => GlassBlob(
           center: const ui.Offset(100, 100),
           radii: const ui.Size(60, 60),
@@ -185,25 +159,78 @@ void main() {
           cornerContinuity: t,
           tint: const ui.Color(0xFF4FC3F7),
         );
+    final circular = await _renderBlobs([blob(0)]);
+    final continuous = await _renderBlobs([blob(1)]);
+    final a = (await circular.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    final b =
+        (await continuous.toByteData(format: ui.ImageByteFormat.rawRgba))!;
 
-    // Diagonal probes (fragments sample at +0.5, so pixel (144,144) probes
-    // q = (44.5, 44.5)). Corner value there is 44.5 * mix(2^(1/2), 2^(1/4), t):
-    //   t=0:   62.9 (d = +2.9, outside)   t=0.5: 57.9 (d = -2.1, inside)
-    // and at pixel (148,148), q = (48.5, 48.5), 48.5 * the same mix:
-    //   t=0.5: 63.1 (d = +3.1, outside)   t=1:   57.7 (d = -2.3, inside)
-    // All margins clear the ~0.75px AA band, so the half-way silhouette lies
-    // strictly between the circle and the squircle — continuity actually
-    // interpolates rather than snapping to either profile.
-    final circle = await _renderBlobs([blob(0)]);
-    final half = await _renderBlobs([blob(0.5)]);
-    final cD = (await circle.toByteData(format: ui.ImageByteFormat.rawRgba))!;
-    final hD = (await half.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    // The continuous arm still runs (pow(x, 2.0) rather than length()), so
+    // the AA band rounds a step or two differently; the silhouette itself
+    // must not move, which the total coverage pins to a fraction of a pixel.
+    var areaA = 0.0, areaB = 0.0;
+    for (var y = 0; y < 200; y++) {
+      for (var x = 0; x < 200; x++) {
+        expect((_alphaAt(b, x, y, 200) - _alphaAt(a, x, y, 200)).abs(),
+            lessThanOrEqualTo(4),
+            reason: 'pixel ($x, $y)');
+        areaA += _alphaAt(a, x, y, 200) / 255;
+        areaB += _alphaAt(b, x, y, 200) / 255;
+      }
+    }
+    // 8px^2 over a 377px perimeter is a mean radial shift under 0.02px; a
+    // real profile change of 0.001 * r would move it by 22.
+    expect(areaB, closeTo(areaA, 8));
 
-    expect(_alphaAt(cD, 144, 144, 200), 0);
-    expect(_alphaAt(hD, 144, 144, 200), 255,
-        reason: 'half continuity should bulge past the circle');
-    expect(_alphaAt(hD, 148, 148, 200), 0,
-        reason: 'half continuity should stay inside the full squircle');
+    // And it really is the radius-60 circle: the diagonal at |q| = 68.6 is
+    // far outside it, where the old squircle profile used to bulge.
+    expect(_alphaAt(b, 148, 148, 200), 0);
+    expect(_alphaAt(b, 159, 100, 200), greaterThan(200));
+  });
+
+  test('continuity interpolates the corner between circular and continuous',
+      () async {
+    // Room to spare (half-extent 3x the radius), so the profile runs out to
+    // its full 1.36x reach.
+    GlassBlob blob(double t) => GlassBlob(
+          center: const ui.Offset(100, 100),
+          radii: const ui.Size(60, 60),
+          cornerRadius: 20,
+          cornerContinuity: t,
+          tint: const ui.Color(0xFF4FC3F7),
+        );
+
+    /// Sub-pixel y of the top silhouette on column [x], from the AA ramp.
+    Future<double> edgeY(double t, int x) async {
+      final image = await _renderBlobs([blob(t)]);
+      final data =
+          (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+      var cover = 0.0;
+      for (var y = 30; y < 100; y++) {
+        cover += _alphaAt(data, x, y, 200) / 255;
+      }
+      return 100 - cover;
+    }
+
+    // Mid-edge, far outside any corner: all three sit on the box edge, which
+    // also calibrates the AA ramp's own bias out of the corner probes below.
+    final flat = await edgeY(1, 100);
+    expect(flat, closeTo(await edgeY(0, 100), 0.02));
+
+    // 0.75 radii in from the corner, where circular and continuous differ
+    // most: the circular arc has dipped 0.635px below the edge, ours 1.0px.
+    final circular = await edgeY(0, 145) - flat;
+    final half = await edgeY(0.5, 145) - flat;
+    final full = await edgeY(1, 145) - flat;
+
+    // Circular: the radius-20 arc at 0.75r in, 0.77px below the box edge.
+    // Continuous: 1.14px, the same corner reaching further along the edge.
+    expect(circular, closeTo(0.76, 0.05));
+    expect(full, closeTo(1.14, 0.05));
+    // Half-way lies strictly between: continuity interpolates the profile
+    // rather than snapping to either end.
+    expect(half, greaterThan(circular + 0.1));
+    expect(half, lessThan(full - 0.1));
   });
 
   group('distortion blobs', () {

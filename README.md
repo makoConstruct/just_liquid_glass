@@ -39,7 +39,7 @@ Flaws that anyone could fix immediately if they wanted to:
 
 Other features:
 
-- You can *lerp between* apple-style continuous corners and round corners.
+- You can *lerp between* apple-style continuous corners and round corners. At full continuity the corner is fitted to Flutter's [`RSuperellipse`](https://api.flutter.dev/flutter/dart-ui/RSuperellipse-class.html) — what `RoundedSuperellipseBorder` paints, and SwiftUI's `.continuous`. It is a fit, not that shape: Impeller builds the corner from a superellipse segment patched with a circular arc, which has no closed-form distance and so can't go in an SDF, so this uses a single superellipse pinned to the same 45° point. It stays within 0.0066 of the corner radius of the real thing, measured against `dart:ui` in `test/rsuperellipse_test.dart`. What that buys you is that a `cornerRadius` here means what it means in a `Container` decoration — the corner's 45° depth is identical to Flutter's, so radii are directly comparable in both directions.
 
 - There's a GlassSwell widget which you can use to make buttons that create a bulge in the glass of the parent when pressed.
 
@@ -88,6 +88,10 @@ GlassLayer(
 Call `GlassLayer.precache()` early (e.g. in `main`) if you want the first
 frame to include the glass; otherwise the layer renders its child alone
 until the shader programs finish loading.
+
+## If you have multiple glass layers, use a shared backdropGroupKey
+
+Backdrop filters are the expensive part of glass. For each one, Impeller ends the current render pass and re-draws the *entire* render target into a fresh one (`Canvas::FlipBackdrop` in `impeller/display_list/canvas.cc`). If you have multiple GlassLayers showing at the same time, you should probably have them use a shared `GlassLayer.backdropGroupKey`. They'll be slightly incorrect where they overlap, but generally not noticeably so, and it will improve performance by a lot.
 
 ### Shape model
 

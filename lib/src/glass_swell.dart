@@ -199,6 +199,11 @@ class GlassPressSwell extends StatefulWidget {
   /// Swell tint at the height of the press; the swell fades between the
   /// two with the press. Defaults to [tint] at half its alpha, softening
   /// the pressed row against the panel.
+  ///
+  /// On an otherwise fully opaque panel that default also takes the layer
+  /// off its no-backdrop fast path for the duration of the press (see
+  /// [GlassLayer.backdropGroupKey] for what that path is worth); pass an
+  /// opaque colour here — a lighter or darker shade of [tint] — to keep it.
   final Color? pressedTint;
 
   /// See [GlassSwell.insets].

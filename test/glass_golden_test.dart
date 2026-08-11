@@ -146,7 +146,7 @@ void main() {
       shine.setFloat(5, options.shineDirection);
       shine.setFloat(6, options.bevelThickness);
       for (var i = 0; i < packed.length; i++) {
-        shine.setFloat(7 + i, packed[i]);
+        shine.setFloat(11 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();

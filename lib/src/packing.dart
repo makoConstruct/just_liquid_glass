@@ -5,11 +5,11 @@ import 'dart:ui';
 import 'glass_blob.dart';
 
 /// Maximum number of blobs a single [GlassLayer] can render. Must match the
-/// `uBlobs` array size in the shaders (5 vec4 per blob).
+/// `uBlobs` array size in the shaders (6 vec4 per blob).
 const int maxBlobs = 16;
 
-/// Floats per blob in the packed uniform layout (5 vec4).
-const int floatsPerBlob = 20;
+/// Floats per blob in the packed uniform layout (6 vec4).
+const int floatsPerBlob = 24;
 
 /// Packs [blobs] into the flat float layout consumed by both shaders.
 ///
@@ -20,15 +20,17 @@ const int floatsPerBlob = 20;
 /// [ 8] axis.x     [ 9] axis.y     [10] cos(halfAp) (-2 = full)  [11] sin(halfAp)
 /// [12] tint.r     [13] tint.g     [14] tint.b        [15] tint.a
 /// [16] cornerContinuity  [17] distortion  [18] distortionRange  [19] reserved
+/// [20] reachX     [21] exponentX  [22] reachY        [23] exponentY
 /// ```
 /// A negative `[11]` marks a circular ring segment (circular radii, fully
 /// rounded, with a hole and a sector): the shader renders those as an arc
 /// with round end caps.
 ///
-/// `[16]` blends the corner term from a circular arc (0) to a continuous
-/// ("squircle") corner (1); see [GlassBlob.cornerContinuity] and sdBlob's
-/// corner term. Ring segments are always circular regardless of continuity
-/// (see [isCappedArc]).
+/// `[16]` is non-zero when the corner profile is continuous at all, which is
+/// the shader's cheap branch out of the superellipse math; `[20..23]` carry
+/// the profile itself (see [cornerProfile]), already lerped by the
+/// continuity, so a `0` continuity packs the plain circular corner
+/// (`reach == cornerRadius`, `exponent == 2`) on both axes.
 ///
 /// A non-zero `[17]` marks a distortion blob: the shader excludes it from
 /// the smooth-min merge (so it never renders) and instead subtracts a bump
@@ -99,15 +101,85 @@ Float32List packBlobs(List<GlassBlob> blobs) {
     data[o + 15] = blob.tint.a;
 
     // Suppressed at corner <= 0 so sharp rectangles and exit-lift blobs keep
-    // the canonical Euclidean field; the two corner norms only agree inside
-    // the corner square, which those cases don't have.
-    data[o + 16] = corner > 0
-        ? blob.cornerContinuity.clamp(0.0, 1.0).toDouble()
-        : 0;
+    // the canonical Euclidean field: there is no corner square to reshape.
+    final continuity =
+        corner > 0 ? blob.cornerContinuity.clamp(0.0, 1.0).toDouble() : 0.0;
+    data[o + 16] = continuity;
     data[o + 17] = blob.distortion;
-    data[o + 18] = math.max(blob.distortionRange, 0); // [19] stays 0
+    data[o + 18] = math.max(blob.distortionRange, 0);
+
+    // One profile per axis, kept whole within one vec4 for the shader: the
+    // corner's reach along an edge depends on that edge's own half-extent (a
+    // wide pill gets a long tail lengthwise and an exactly circular end cap).
+    final x = cornerProfile(rx, corner, continuity);
+    final y = cornerProfile(ry, corner, continuity);
+    data[o + 20] = x.reach; // [19] stays 0
+    data[o + 21] = x.exponent;
+    data[o + 22] = y.reach;
+    data[o + 23] = y.exponent;
   }
   return data;
+}
+
+/// Depth of the corner's 45° point below the bounding box, in units of the
+/// corner radius — `1 - cos(pi/4)`.
+///
+/// A circular arc and Flutter's [RSuperellipse] agree here *exactly*: Impeller
+/// pins the rounded superellipse's corner midpoint to the circular one
+/// (`RoundSuperellipseParam::kGapFactor`) and spends the continuity entirely
+/// on how the curve reaches the flat edges. So does [cornerProfile].
+const double cornerGap = 0.29289321881;
+
+/// Longest a continuous corner reaches along an edge, in units of the corner
+/// radius, and how fast it gets there as the edge grows past the radius.
+///
+/// Fitted (see test/rsuperellipse_test.dart) against Flutter's real shape.
+const double _reachMax = 1.36;
+const double _reachSlope = 0.5;
+
+/// The corner curve along one axis: a superellipse of half-extent [reach] and
+/// degree [exponent], both in the corner's local frame.
+typedef CornerProfile = ({double reach, double exponent});
+
+/// Corner profile for an edge of half-extent [halfExtent], a [cornerRadius]
+/// and a [continuity] in `0..1`.
+///
+/// At `continuity == 1` this is a *fit* to Flutter's [RSuperellipse]
+/// (`RoundedSuperellipseBorder`, the Apple/SwiftUI `.continuous` shape), not
+/// that shape. Impeller builds its corner from a superellipse segment patched
+/// with a circular arc; that has no closed-form distance, and a piecewise port
+/// would seam the field by 5-8% of its own value right through the bevel band,
+/// so this uses a single superellipse pinned to the same 45° point
+/// ([cornerGap]) instead.
+///
+/// The fit stays within `0.0066 * cornerRadius` of perpendicular deviation
+/// (bounded by test/rsuperellipse_test.dart against `dart:ui` itself). It is
+/// worst about three quarters of a radius in from the corner, where it
+/// over-dips by ~0.007 of the radius, and past ~1.3 radii it has rejoined the
+/// flat edge while Flutter's still has a very shallow tail. For scale, the
+/// whole circular-to-continuous difference is only ~0.015 of the radius, so
+/// this reproduces the effect but not its exact distribution. Fitting `reach`
+/// and `exponent` freely per ratio would only reach 0.0056, so the residual is
+/// the curve family's, not a tuning miss.
+///
+/// Both endpoints are exact rather than approximate: `continuity == 0` gives
+/// the circular corner, and so does `cornerRadius == halfExtent` at *any*
+/// continuity — matching Impeller, whose rounded superellipse degenerates to
+/// a true circle once the radius fills the box.
+CornerProfile cornerProfile(
+    double halfExtent, double cornerRadius, double continuity) {
+  if (cornerRadius <= 0 || continuity <= 0) {
+    return (reach: cornerRadius, exponent: 2);
+  }
+  // Reach grows with the room available past the radius, then saturates.
+  final full =
+      math.min(_reachMax, 1 + _reachSlope * (halfExtent / cornerRadius - 1));
+  final sigma = 1 + (full - 1) * continuity;
+  // Degree that puts the curve's 45° point back on the circular one. Exact at
+  // sigma == 1 (exponent 2, a circular arc), and near-linear in sigma above.
+  final exponent =
+      sigma <= 1 ? 2.0 : math.ln2 / -math.log(1 - cornerGap / sigma);
+  return (reach: sigma * cornerRadius, exponent: exponent);
 }
 
 /// Effective corner radius after the clamp applied during packing.
@@ -128,11 +200,10 @@ bool isCappedArc(GlassBlob blob) {
   final rx = blob.radii.width;
   final ry = blob.radii.height;
   // Non-positive radii (exit lift) always take the rounded-box path.
-  // Any corner continuity never takes the arc path: at a full corner radius
-  // it forms a (partial) squircle rather than a circle, which the capped-arc
-  // SDF (built on true circular symmetry) can't represent.
+  // Continuity is not excluded: everything below also forces the corner
+  // radius to fill the box, where the continuous profile *is* the circle
+  // (see [cornerProfile]), so the capped-arc SDF stays exact.
   return math.min(rx, ry) > 0 &&
-      blob.cornerContinuity <= 0 &&
       _sweep(blob) < (math.pi * 2) - 1e-6 &&
       _effectiveHole(blob) > 0 &&
       (rx - ry).abs() <= 1e-3 &&

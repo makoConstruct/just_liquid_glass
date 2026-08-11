@@ -25,7 +25,13 @@ import 'shine_motion.dart';
 ///     the highlight fully covers the glass edge's AA fringe.
 ///
 /// [GlassMode.glass] picks the glass path when the backend supports it and
-/// falls back to flat otherwise, rather than throwing.
+/// falls back to flat otherwise, rather than throwing. It also skips the
+/// [BackdropFilter] on any frame where every resolved blob's tint is fully
+/// opaque — the backdrop cannot show through an opaque tint, so the same
+/// picture (tint, edge tint, shine, coverage) is drawn as an ordinary canvas
+/// shader, and the layer stops charging for a backdrop read it can't use.
+/// Layers that really are translucent can share one read with
+/// [backdropGroupKey].
 ///
 /// The rendered blobs are [blobs] concatenated with the result of
 /// [blobBuilder] (if any) and with [GlassLayerState.injectedBlobs], which
@@ -42,6 +48,8 @@ class GlassLayer extends StatefulWidget {
     required this.blobs,
     this.blobBuilder,
     this.options = const GlassOptions(),
+    this.backdropGroupKey,
+    this.useBackdropGroup = false,
   }) : assert(blobs.length <= maxBlobs,
             'GlassLayer supports at most $maxBlobs blobs');
 
@@ -68,6 +76,44 @@ class GlassLayer extends StatefulWidget {
   final List<GlassBlob> Function(Size size)? blobBuilder;
 
   final GlassOptions options;
+
+  /// Groups this layer's backdrop read with every other [BackdropFilter] (or
+  /// [GlassLayer]) painted in the same frame under the same [BackdropKey].
+  /// Null, the default, leaves the layer ungrouped.
+  ///
+  /// This is purely a performance knob, and a large one: Impeller pays for
+  /// each *ungrouped* backdrop filter by ending the render pass and re-drawing
+  /// the entire render target into a fresh one — full-screen work every
+  /// frame, no matter how small the blobs are or whether anything moved.
+  /// Worse, only the last backdrop filter in a frame can flip straight onto
+  /// the onscreen target (via framebuffer fetch), so the second glass layer
+  /// in a scene costs more than the first did alone. Under a shared key the
+  /// engine flips once, caches that texture, and hands it to every member,
+  /// collapsing N of those flips into one.
+  ///
+  /// The catch is that a group is a *single* backdrop, sampled before any of
+  /// its members drew: grouped layers see what was behind the group, not each
+  /// other. Panes side by side look identical either way. Panes that overlap
+  /// do not — the upper one refracts what is behind the group instead of the
+  /// lower one's glass, and since our coverage is opaque inside the blobs it
+  /// simply paints over it. Whether that reads as wrong depends on the scene;
+  /// with a wide [GlassOptions.blurRadius] the two backdrops are similar
+  /// enough that it usually doesn't. A fully opaque layer never joins a group
+  /// because it does no backdrop read at all (see [GlassBlob.tint]).
+  ///
+  /// [useBackdropGroup] takes the key from an enclosing [BackdropGroup]
+  /// instead of naming one here.
+  final BackdropKey? backdropGroupKey;
+
+  /// Joins the nearest enclosing [BackdropGroup], if there is one — the same
+  /// thing [BackdropFilter.grouped] does, and the usual way to group: wrap
+  /// the panels in a [BackdropGroup] and set this on each.
+  ///
+  /// The group's key overrides [backdropGroupKey], so a layer can name a key
+  /// for the case where no group encloses it and still fall in with one that
+  /// does. With no [BackdropGroup] ancestor this leaves [backdropGroupKey] in
+  /// force (ungrouped, if that is null too).
+  final bool useBackdropGroup;
 
   /// Maximum number of blobs per layer.
   static const int maxBlobCount = maxBlobs;
@@ -110,12 +156,49 @@ class _GlassPrograms {
 // Uniform float indices in flat.frag.
 const int _flatBlobCount = 0;
 const int _flatBlendRadius = 1;
-const int _flatMode = 2; // 0 = tint fill, 1 = coverage mask, 2 = shine
+const int _flatMode = 2;
 const int _flatDpr = 3;
 const int _flatShineIntensity = 4;
 const int _flatShineDirection = 5;
 const int _flatBevelThickness = 6;
-const int _flatBlobsStart = 7;
+const int _flatEdgeTintStart = 7; // 7..10: rgba
+const int _flatBlobsStart = 11;
+
+// Values of the flat.frag uMode uniform.
+const double _modeFill = 0;
+const double _modeMask = 1;
+const double _modeShine = 2;
+const double _modeOpaque = 3;
+
+/// Writes flat.frag's whole uniform block for one pass. Shared by the fill
+/// and shine passes, the child mask and the opaque glass path: every mode
+/// reads the same field, so writing them all from one place keeps the four
+/// from drifting apart. Uniforms a mode ignores cost a buffer write and
+/// nothing else.
+void _setFlatUniforms(
+  ui.FragmentShader shader,
+  _BlobResolver resolver,
+  double mode,
+  GlassOptions options,
+  double dpr, {
+  double shineTilt = 0,
+}) {
+  shader.setFloat(_flatBlobCount, resolver.count.toDouble());
+  shader.setFloat(_flatBlendRadius, options.blendRadius);
+  shader.setFloat(_flatMode, mode);
+  shader.setFloat(_flatDpr, dpr);
+  shader.setFloat(_flatShineIntensity, options.shineIntensity);
+  shader.setFloat(_flatShineDirection, options.shineDirection + shineTilt);
+  shader.setFloat(_flatBevelThickness, options.bevelThickness);
+  shader.setFloat(_flatEdgeTintStart, options.edgeTint.r);
+  shader.setFloat(_flatEdgeTintStart + 1, options.edgeTint.g);
+  shader.setFloat(_flatEdgeTintStart + 2, options.edgeTint.b);
+  shader.setFloat(_flatEdgeTintStart + 3, options.edgeTint.a);
+  final packed = resolver.packed;
+  for (var i = 0; i < packed.length; i++) {
+    shader.setFloat(_flatBlobsStart + i, packed[i]);
+  }
+}
 
 /// Bumped by [GlassLayerState.replaceBlob]: carries a revision so
 /// [_BlobResolver]s know to re-resolve, and notifies so every pass repaints
@@ -169,6 +252,25 @@ class _BlobResolver {
   /// than screen area.
   Rect bounds = Rect.zero;
 
+  /// [bounds] without the refraction and blur padding: what the passes that
+  /// only ever touch fragments at or inside the silhouette (fill, shine,
+  /// opaque fill) need. Those two paddings exist to widen the *backdrop*
+  /// read, not the drawn region.
+  Rect flatBounds = Rect.zero;
+
+  /// Whether every resolved blob's tint is fully opaque, which makes the
+  /// backdrop invisible: glass.frag mixes the sampled backdrop toward the
+  /// tint by `tint.a`, so at 1 the refracted, blurred backdrop contributes
+  /// nothing to any covered pixel. Such a layer is rendered by flat.frag's
+  /// opaque mode with no [BackdropFilter] at all — see
+  /// [_RenderGlassBackdrop.paint].
+  ///
+  /// The merge only ever blends tints with each other, so all-opaque inputs
+  /// give an opaque result everywhere the field is covered; a single
+  /// translucent blob (a [GlassSwell] mid-press, say) takes the layer back
+  /// to the real glass path on the frame it appears.
+  bool opaque = false;
+
   /// Re-resolves against [size] if it or the injection revision changed;
   /// call from paint with the pass's laid-out size.
   void resolveFor(Size size) {
@@ -187,6 +289,8 @@ class _BlobResolver {
     packed = packBlobs(all);
     if (all.isEmpty) {
       bounds = Rect.zero;
+      flatBounds = Rect.zero;
+      opaque = false;
       return;
     }
     var b = blobBounds(all.first);
@@ -196,15 +300,15 @@ class _BlobResolver {
     // Distortion pushes every nearby surface outward by up to the blob's
     // strength; overlapping distorters add, so pad by their (positive) sum.
     var distortPad = 0.0;
+    var allOpaque = true;
     for (final blob in all) {
       if (blob.distortion > 0) distortPad += blob.distortion;
+      if (blob.tint.a < 1) allOpaque = false;
     }
-    final pad = options.blendRadius +
-        options.refractionIntensity +
-        1.5 * options.blurRadius +
-        distortPad +
-        8;
-    bounds = b.inflate(pad);
+    opaque = allOpaque;
+    flatBounds = b.inflate(options.blendRadius + distortPad + 8);
+    bounds = flatBounds
+        .inflate(options.refractionIntensity + 1.5 * options.blurRadius);
   }
 
   /// Whether swapping [old] for [current] can change painted output. Builder
@@ -372,22 +476,6 @@ class GlassLayerState extends State<GlassLayer> {
       MediaQuery.maybeDevicePixelRatioOf(context) ??
       View.of(context).devicePixelRatio;
 
-  void _setFlatUniforms(ui.FragmentShader shader, _BlobResolver resolver,
-      double mode, double dpr) {
-    final options = widget.options;
-    final packed = resolver.packed;
-    shader.setFloat(_flatBlobCount, resolver.count.toDouble());
-    shader.setFloat(_flatBlendRadius, options.blendRadius);
-    shader.setFloat(_flatMode, mode);
-    shader.setFloat(_flatDpr, dpr);
-    shader.setFloat(_flatShineIntensity, options.shineIntensity);
-    shader.setFloat(_flatShineDirection, options.shineDirection);
-    shader.setFloat(_flatBevelThickness, options.bevelThickness);
-    for (var i = 0; i < packed.length; i++) {
-      shader.setFloat(_flatBlobsStart + i, packed[i]);
-    }
-  }
-
   Widget _flatPass(ui.FragmentShader shader, _BlobResolver resolver,
       double mode, double dpr,
       {ValueListenable<double>? shineTilt}) {
@@ -427,36 +515,48 @@ class GlassLayerState extends State<GlassLayer> {
     final resolver = _BlobResolver(widget.blobs, injectedBlobs, _injections,
         widget.blobBuilder, widget.options);
 
+    final fillShader = _fillShader ??= _GlassPrograms.flat!.fragmentShader();
+
     Widget overlay;
     if (glass) {
       final view = View.of(context);
       overlay = _GlassBackdrop(
         shader: _glassShader ??= _GlassPrograms.glass!.fragmentShader(),
+        // Also handed the flat program, for the opaque path: that one draws
+        // with no backdrop filter, so it is flat.frag's job.
+        fillShader: fillShader,
         resolver: resolver,
         options: widget.options,
         dpr: dpr,
         viewSize: view.physicalSize / view.devicePixelRatio,
+        backdropKey: (widget.useBackdropGroup
+                ? BackdropGroup.of(context)?.backdropKey
+                : null) ??
+            widget.backdropGroupKey,
         repaint: _injections,
       );
     } else {
-      overlay = _flatPass(_fillShader ??= _GlassPrograms.flat!.fragmentShader(),
-          resolver, 0, dpr);
+      overlay = _flatPass(fillShader, resolver, _modeFill, dpr);
     }
 
-    final maskedChild = _RepaintableShaderMask(
-      blendMode: BlendMode.dstIn,
-      // Injected-blob changes must reach the mask as repaints: a plain
-      // ShaderMask only re-evaluates its callback when something else marks
-      // it dirty, and mutating uniforms in place marks nothing.
+    final maskedChild = _BlobClip(
+      resolver: resolver,
       repaint: _injections,
-      shaderCallback: (maskBounds) {
-        // A paint-time hook: maskBounds is the child's laid-out rect.
-        final shader = _maskShader ??= _GlassPrograms.flat!.fragmentShader();
-        resolver.resolveFor(maskBounds.size);
-        _setFlatUniforms(shader, resolver, 1, dpr);
-        return shader;
-      },
-      child: widget.child,
+      child: _RepaintableShaderMask(
+        blendMode: BlendMode.dstIn,
+        // Injected-blob changes must reach the mask as repaints: a plain
+        // ShaderMask only re-evaluates its callback when something else marks
+        // it dirty, and mutating uniforms in place marks nothing.
+        repaint: _injections,
+        shaderCallback: (maskBounds) {
+          // A paint-time hook: maskBounds is the child's laid-out rect.
+          final shader = _maskShader ??= _GlassPrograms.flat!.fragmentShader();
+          resolver.resolveFor(maskBounds.size);
+          _setFlatUniforms(shader, resolver, _modeMask, widget.options, dpr);
+          return shader;
+        },
+        child: widget.child,
+      ),
     );
 
     return Stack(
@@ -480,7 +580,7 @@ class GlassLayerState extends State<GlassLayer> {
               child: _flatPass(
                   _shineShader ??= _GlassPrograms.flat!.fragmentShader(),
                   resolver,
-                  2,
+                  _modeShine,
                   dpr,
                   // Sensor ticks repaint only this pass; the backdrop
                   // (refraction/blur) never sees them.
@@ -512,17 +612,26 @@ const int _glassBlobsStart = 17;
 /// resolved via [RenderBox.localToGlobal] in [paint]. The filter is clipped
 /// there too, to the resolver's padded blob bounds, so GPU cost scales with
 /// blob area rather than layer area.
+///
+/// When the resolved blobs turn out to be fully opaque it drops the backdrop
+/// filter entirely and draws [fillShader] instead; see [paint].
 class _GlassBackdrop extends SingleChildRenderObjectWidget {
   const _GlassBackdrop({
     required this.shader,
+    required this.fillShader,
     required this.resolver,
     required this.options,
     required this.dpr,
     required this.viewSize,
+    required this.backdropKey,
     required this.repaint,
   }) : super(child: const SizedBox.expand());
 
   final ui.FragmentShader shader;
+
+  /// flat.frag, used in opaque mode when there is no backdrop to read.
+  final ui.FragmentShader fillShader;
+
   final _BlobResolver resolver;
   final GlassOptions options;
   final double dpr;
@@ -531,13 +640,26 @@ class _GlassBackdrop extends SingleChildRenderObjectWidget {
   /// to trim the filter clip to the render target at paint time.
   final Size viewSize;
 
+  /// Shared-backdrop group this layer joins, or null; see
+  /// [GlassLayer.backdropGroupKey].
+  final BackdropKey? backdropKey;
+
   /// Fires on injected-blob changes; the render object repaints without any
   /// rebuild.
   final Listenable repaint;
 
   @override
   RenderObject createRenderObject(BuildContext context) =>
-      _RenderGlassBackdrop(shader, resolver, options, dpr, viewSize, repaint);
+      _RenderGlassBackdrop(
+        shader: shader,
+        fillShader: fillShader,
+        resolver: resolver,
+        options: options,
+        dpr: dpr,
+        viewSize: viewSize,
+        backdropKey: backdropKey,
+        repaint: repaint,
+      );
 
   @override
   void updateRenderObject(
@@ -547,25 +669,36 @@ class _GlassBackdrop extends SingleChildRenderObjectWidget {
     // compare identical.
     renderObject
       ..shader = shader
+      ..fillShader = fillShader
       ..resolver = resolver
       ..options = options
       ..dpr = dpr
       ..viewSize = viewSize
+      ..backdropKey = backdropKey
       ..repaint = repaint
       ..markNeedsPaint();
   }
 }
 
 class _RenderGlassBackdrop extends RenderProxyBox {
-  _RenderGlassBackdrop(this.shader, this.resolver, this.options, this.dpr,
-      this.viewSize, Listenable repaint)
-      : _repaint = repaint;
+  _RenderGlassBackdrop({
+    required this.shader,
+    required this.fillShader,
+    required this.resolver,
+    required this.options,
+    required this.dpr,
+    required this.viewSize,
+    required this.backdropKey,
+    required this._repaint,
+  });
 
   ui.FragmentShader shader;
+  ui.FragmentShader fillShader;
   _BlobResolver resolver;
   GlassOptions options;
   double dpr;
   Size viewSize;
+  BackdropKey? backdropKey;
 
   Listenable _repaint;
   set repaint(Listenable value) {
@@ -575,8 +708,16 @@ class _RenderGlassBackdrop extends RenderProxyBox {
     if (attached) _repaint.addListener(markNeedsPaint);
   }
 
-  ClipRectLayer? _clipLayer;
+  // See _RenderBlobClip for why this is a handle and not a bare field.
+  final LayerHandle<ClipRectLayer> _clipLayer = LayerHandle<ClipRectLayer>();
 
+  // Stays true even on the opaque path, which pushes no layer at all. The
+  // flag is decided per frame, at paint time (that is the first moment the
+  // blob list — blobBuilder output, injected blobs — is known), and
+  // compositing bits are settled before paint, so it cannot track it. The
+  // cost of over-reporting is that ancestors keep using layers for effects
+  // they might have drawn inline; the cost of getting it wrong the other way
+  // would be pushing a backdrop layer an ancestor didn't expect.
   @override
   bool get alwaysNeedsCompositing => true;
 
@@ -594,7 +735,7 @@ class _RenderGlassBackdrop extends RenderProxyBox {
 
   @override
   void dispose() {
-    _clipLayer = null;
+    _clipLayer.layer = null;
     super.dispose();
   }
 
@@ -602,7 +743,15 @@ class _RenderGlassBackdrop extends RenderProxyBox {
   void paint(PaintingContext context, Offset offset) {
     // We fill the GlassLayer, so our size is the layer's laid-out size.
     resolver.resolveFor(size);
-    if (resolver.count == 0) return;
+    if (resolver.count == 0) {
+      _clipLayer.layer = null;
+      return;
+    }
+
+    if (resolver.opaque) {
+      _paintOpaque(context, offset);
+      return;
+    }
 
     // Global logical coordinates match the backdrop render target as long as
     // no ancestor saveLayer re-targets rendering; a GlassLayer inside e.g. an
@@ -660,6 +809,7 @@ class _RenderGlassBackdrop extends RenderProxyBox {
     final blurSigma = options.blurRadius / 2;
     final shaderFilter = ui.ImageFilter.shader(shader);
     final layer = (this.layer as BackdropFilterLayer?) ?? BackdropFilterLayer();
+    layer.backdropKey = backdropKey;
     layer.filter = blurSigma > 0
         ? ui.ImageFilter.compose(
             outer: shaderFilter,
@@ -677,17 +827,174 @@ class _RenderGlassBackdrop extends RenderProxyBox {
     this.layer = layer;
 
     if (visible == ownBounds) {
-      _clipLayer = null;
+      _clipLayer.layer = null;
       context.pushLayer(layer, super.paint, offset);
     } else {
-      _clipLayer = context.pushClipRect(
+      _clipLayer.layer = context.pushClipRect(
         needsCompositing,
         offset,
         visible,
         (context, offset) => context.pushLayer(layer, super.paint, offset),
-        oldLayer: _clipLayer,
+        oldLayer: _clipLayer.layer,
       );
     }
+  }
+
+  /// Paints a layer whose every tint is opaque as a plain canvas shader,
+  /// with no [BackdropFilterLayer] anywhere in the scene.
+  ///
+  /// This is the whole point of tracking [_BlobResolver.opaque]. Impeller
+  /// charges for each backdrop filter by ending the render pass and
+  /// re-drawing the entire render target into a fresh one — full-screen work
+  /// per filter per frame, unaffected by our clip and by whether anything
+  /// changed, which is what makes a second glass layer in a scene hurt. An
+  /// opaque layer reads nothing from that backdrop (flat.frag's opaque mode
+  /// documents why the picture is identical), so it can simply not ask for
+  /// one.
+  void _paintOpaque(PaintingContext context, Offset offset) {
+    final region = resolver.flatBounds.intersect(Offset.zero & size);
+    if (region.isEmpty) return;
+    _setFlatUniforms(fillShader, resolver, _modeOpaque, options, dpr);
+
+    // Release the backdrop machinery: a layer that goes opaque mid-animation
+    // must not leave a filter layer parented in the scene, and holding the
+    // texture would be a pure leak while it stays opaque.
+    layer = null;
+    _clipLayer.layer = null;
+
+    final canvas = context.canvas;
+    canvas.save();
+    // The shader reads FlutterFragCoord in canvas space, and blob centers are
+    // GlassLayer-local; we fill the layer, so translating to our own origin
+    // aligns the two (the equivalent of uOrigin on the glass path).
+    canvas.translate(offset.dx, offset.dy);
+    canvas.drawRect(region, Paint()..shader = fillShader);
+    canvas.restore();
+    super.paint(context, offset);
+  }
+}
+
+/// Clips [child] to the blob region when it paints, leaving layout and hit
+/// testing alone.
+///
+/// Wrapped around the masked child, this is what keeps the mask's cost
+/// proportional to the blobs rather than to the layer. A [ShaderMask] pushes a
+/// save layer over its whole size ([RenderShaderMask.paint] sets
+/// `maskRect = offset & size`) and evaluates the field across all of it, so a
+/// small panel inside a big layer pays for an offscreen texture the size of
+/// the layer, plus a full-layer SDF pass, every frame. Impeller sizes a save
+/// layer's texture by the current clip (`Canvas::GetLocalCoverageLimit`), so
+/// clipping first shrinks both.
+///
+/// Visually free: the clip is [_BlobResolver.flatBounds], outside which the
+/// merged field's coverage is zero — the same bound the fill and shine passes
+/// already draw within, so a mask that this clipped away would have been
+/// masking with zero alpha anyway.
+///
+/// Hit testing is deliberately not clipped (unlike [ClipRect]): the child's
+/// tappable area has always been its whole layout, masked or not, and
+/// shrinking it here would be a silent behaviour change unrelated to
+/// performance.
+class _BlobClip extends SingleChildRenderObjectWidget {
+  const _BlobClip({
+    required this.resolver,
+    required this.repaint,
+    required super.child,
+  });
+
+  final _BlobResolver resolver;
+  final Listenable repaint;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderBlobClip(resolver: resolver, repaint: repaint);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderBlobClip renderObject) {
+    renderObject
+      ..resolver = resolver
+      ..repaint = repaint
+      ..markNeedsPaint();
+  }
+}
+
+class _RenderBlobClip extends RenderProxyBox {
+  _RenderBlobClip({required this.resolver, required this._repaint});
+
+  _BlobResolver resolver;
+
+  Listenable _repaint;
+  set repaint(Listenable value) {
+    if (identical(value, _repaint)) return;
+    if (attached) _repaint.removeListener(markNeedsPaint);
+    _repaint = value;
+    if (attached) _repaint.addListener(markNeedsPaint);
+  }
+
+  // A LayerHandle, not a bare field: the handle is what keeps the pushed
+  // layer alive between paints. Held raw, it is disposed as soon as a paint
+  // doesn't re-append it, and the next paint hands a dead layer back as
+  // oldLayer — which asserts in ClipRectLayer.
+  final LayerHandle<ClipRectLayer> _clipLayer = LayerHandle<ClipRectLayer>();
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _repaint.addListener(markNeedsPaint);
+  }
+
+  @override
+  void detach() {
+    _repaint.removeListener(markNeedsPaint);
+    super.detach();
+  }
+
+  @override
+  void dispose() {
+    _clipLayer.layer = null;
+    super.dispose();
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (child == null) return;
+    resolver.resolveFor(size);
+    final ownBounds = Offset.zero & size;
+    // No blobs means no coverage: the mask would erase the child entirely,
+    // so painting it at all is wasted. (The builder-less empty-blobs case
+    // never gets here — GlassLayer short-circuits to the bare child.)
+    if (resolver.count == 0) {
+      _clipLayer.layer = null;
+      return;
+    }
+    // Rounded out to whole logical pixels. Blob bounds are arbitrary reals
+    // (a rotated blob's extent is irrational), and a fractional clip moves
+    // the save layer it bounds onto a fractional origin, which re-rasterizes
+    // the child on a shifted grid — visible as AA shimmer along any edge in
+    // it, and as golden churn. Rounding out can only ever include more.
+    final blobs = resolver.flatBounds;
+    final region = Rect.fromLTRB(
+      blobs.left.floorToDouble(),
+      blobs.top.floorToDouble(),
+      blobs.right.ceilToDouble(),
+      blobs.bottom.ceilToDouble(),
+    ).intersect(ownBounds);
+    if (region.isEmpty) {
+      _clipLayer.layer = null;
+      return;
+    }
+    if (region == ownBounds) {
+      _clipLayer.layer = null;
+      super.paint(context, offset);
+      return;
+    }
+    _clipLayer.layer = context.pushClipRect(
+      needsCompositing,
+      offset,
+      region,
+      super.paint,
+      oldLayer: _clipLayer.layer,
+    );
   }
 }
 
@@ -718,20 +1025,12 @@ class _FlatBlobPainter extends CustomPainter {
     if (resolver.count == 0) return;
     // Shader coordinates are canvas-local either way; drawing only the blob
     // region just skips the fragments that would come out transparent.
-    final region = resolver.bounds.intersect(Offset.zero & size);
+    // Neither of these passes touches anything past the silhouette's own
+    // band, so they take the bounds without the backdrop-read padding.
+    final region = resolver.flatBounds.intersect(Offset.zero & size);
     if (region.isEmpty) return;
-    final packed = resolver.packed;
-    shader.setFloat(_flatBlobCount, resolver.count.toDouble());
-    shader.setFloat(_flatBlendRadius, options.blendRadius);
-    shader.setFloat(_flatMode, mode);
-    shader.setFloat(_flatDpr, dpr);
-    shader.setFloat(_flatShineIntensity, options.shineIntensity);
-    shader.setFloat(_flatShineDirection,
-        options.shineDirection + (shineTilt?.value ?? 0));
-    shader.setFloat(_flatBevelThickness, options.bevelThickness);
-    for (var i = 0; i < packed.length; i++) {
-      shader.setFloat(_flatBlobsStart + i, packed[i]);
-    }
+    _setFlatUniforms(shader, resolver, mode, options, dpr,
+        shineTilt: shineTilt?.value ?? 0);
     canvas.drawRect(region, Paint()..shader = shader);
   }
 

@@ -67,16 +67,18 @@ uniform vec4 uClip;            // 9..12
 // Alpha scales the strength; fully transparent disables it.
 uniform vec4 uEdgeTint;        // 13..16
 
-// 5 vec4 per blob, up to 16 blobs (float indices 17..336):
+// 6 vec4 per blob, up to 16 blobs (float indices 17..400):
 //   [0] center.x, center.y, cos(rotation), sin(rotation)
 //   [1] radii.x, radii.y, cornerRadius, holeRadius (<= 0 means no hole)
 //   [2] sectorAxis.x, sectorAxis.y, cos(halfAperture) (-2 = full circle),
 //       sin(halfAperture) (negative = circular ring segment with round caps)
 //   [3] tint r, g, b, a
-//   [4] cornerContinuity (0 circular .. 1 squircle),
+//   [4] cornerContinuity (0 circular .. 1 continuous),
 //       distortion (!= 0 marks a non-rendered distortion blob),
 //       distortionRange (falloff distance), reserved (0)
-uniform vec4 uBlobs[80];
+//   [5] corner profile, packed on the CPU with the continuity already lerped
+//       in: reach.x, exponent.x, reach.y, exponent.y (see packing.dart)
+uniform vec4 uBlobs[96];
 
 // Set by the engine: the backdrop, pre-blurred by the composed inner
 // ImageFilter.blur when blurRadius > 0.
@@ -95,7 +97,7 @@ vec4 sampleBg(vec2 uv) {
 // SDF core (keep in sync with flat.frag)
 // ---------------------------------------------------------------------------
 
-float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
+float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle, vec4 se) {
   // Into the blob's local frame.
   vec2 q = p - a.xy;
   q = vec2(a.z * q.x + a.w * q.y, -a.w * q.x + a.z * q.y);
@@ -119,27 +121,49 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
     d = dc - rb;
   } else {
     // Rounded box; cornerRadius is pre-clamped to min(radii) on the CPU, so
-    // cornerRadius == min(radii) yields a stadium/circle (or, at full
-    // continuity, a squircle). A negative r is the exit-lift encoding: it
-    // reduces the field to the point field lifted by -min(radii).
+    // cornerRadius == min(radii) yields a stadium/circle. A negative r is the
+    // exit-lift encoding: it reduces the field to the point field lifted by
+    // -min(radii).
     float r = b.z;
+    float reach = r;
     vec2 e = abs(q) - (b.xy - vec2(r));
-    vec2 e0 = max(e, vec2(0.0));
-    float corner = length(e0);
+    float corner = length(max(e, vec2(0.0)));
     if (squircle > 0.0) {
-      // Continuous ("squircle") corner: blend toward the superellipse norm
-      // (exponent 4) instead of the circular arc's Euclidean norm. Curvature
-      // rises from 0 at the tangent point to a peak at 45°, instead of
-      // jumping straight from 0 to 1/r — this is what gives Apple-style
-      // corners their "continuous" look. Where e0 has a zero component
-      // (i.e. on a flat edge, not in the corner square) the two norms agree
-      // exactly, so any blend is a strict generalization — and fractional
-      // squircle lerps the corner profile, morphing circle -> squircle.
-      vec2 e4 = e0 * e0;
-      e4 = e4 * e4;
-      corner = mix(corner, sqrt(sqrt(e4.x + e4.y)), squircle);
+      // Apple-style continuous corner, fitted to Flutter's RSuperellipse.
+      // A fit, not that curve: Impeller's superellipse-plus-arc corner has
+      // no closed-form distance, so it can't be an SDF (see cornerProfile in
+      // packing.dart for the budget). It keeps the circular corner's 45°
+      // point exactly and spends the continuity on the approach: the curve
+      // leaves the flat edge further out, at `reach` rather than r, so
+      // curvature ramps up from 0 instead of stepping to 1/r at a tangent
+      // point. That is a superellipse of degree `n` > 2 in the corner's
+      // local frame; both come from the CPU, which also folds the 0..1
+      // continuity into them, so this arm lands exactly on the circular
+      // corner as squircle -> 0.
+      //
+      // The reach depends on the edge's own half-extent (a wide pill gets a
+      // long tail lengthwise and an exactly circular end cap), so the two
+      // axes carry different profiles. They agree on the corner diagonal —
+      // both are pinned to the same 45° point — and are blended across it
+      // over a radius' width. Switching outright would instead step the
+      // field by ~8% of its own value along that diagonal, straight through
+      // the bevel band.
+      vec2 room = b.xy - abs(q); // corner-local depth from each edge
+      float t = clamp(0.5 + 0.5 * (room.x - room.y) / r, 0.0, 1.0);
+      t = t * t * (3.0 - 2.0 * t);
+      reach = mix(se.z, se.x, t);
+      float n = mix(se.w, se.y, t);
+      e = abs(q) - (b.xy - vec2(reach));
+      // The floor keeps pow() off exactly 0, where drivers disagree; it
+      // shifts the norm by less than the floor itself.
+      vec2 e0 = max(e, vec2(1e-6));
+      // (x^n + y^n)^(1/n), factored through the larger component: two pow
+      // calls instead of three, and the base of the inner one stays in
+      // (0, 1] however large n and e0 get.
+      float m = max(e0.x, e0.y);
+      corner = m * pow(1.0 + pow(min(e0.x, e0.y) / m, n), 1.0 / n);
     }
-    d = corner + min(max(e.x, e.y), 0.0) - r;
+    d = corner + min(max(e.x, e.y), 0.0) - reach;
 
     // Circular hole around the blob center.
     if (b.w > 0.0) {
@@ -179,9 +203,9 @@ float sceneD(vec2 p) {
   float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
-      vec4 extra = uBlobs[i * 5 + 4];
-      float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], extra.x);
+      vec4 extra = uBlobs[i * 6 + 4];
+      float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
+          uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
@@ -199,9 +223,9 @@ float scene(vec2 p, out vec4 tint) {
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
-      vec4 extra = uBlobs[i * 5 + 4];
-      float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], extra.x);
+      vec4 extra = uBlobs[i * 6 + 4];
+      float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
+          uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
@@ -214,7 +238,7 @@ float scene(vec2 p, out vec4 tint) {
       // weight that drives the push (their h is exactly 0, and rendered
       // blobs never take the s arm, whose t is meaningless for them).
       float hc = extra.y == 0.0 ? h * h * (3.0 - 2.0 * h) : s;
-      tint = mix(tint, uBlobs[i * 5 + 3], hc);
+      tint = mix(tint, uBlobs[i * 6 + 3], hc);
     }
   }
   return d - bump;

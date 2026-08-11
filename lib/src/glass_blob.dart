@@ -13,7 +13,8 @@ const double _tau = math.pi * 2;
 ///   clamps to `min(radii.width, radii.height)`, producing a circle (equal
 ///   radii) or a stadium/pill (unequal radii). `0` gives a sharp rectangle.
 ///   [cornerContinuity] blends the corner profile from circular arcs toward
-///   Apple-style continuous ("squircle") corners.
+///   Apple-style continuous corners, approximating Flutter's
+///   [RSuperellipse].
 /// * [holeRadius] cuts a circular hole of that radius around the blob center,
 ///   turning the shape into a ring/annulus. The default of
 ///   `double.negativeInfinity` (or any value `<= 0`) means no hole.
@@ -146,19 +147,37 @@ class GlassBlob {
 
   /// Corner profile continuity, clamped to `0..1` when packed.
   ///
-  /// At `0`, corners are circular arcs (constant curvature `1/cornerRadius`,
-  /// matching [RRect]/standard rounded rectangles); curvature jumps
-  /// discontinuously from 0 on the flat edge to `1/cornerRadius` at the
-  /// tangent point. At `1`, corners follow a superellipse blend (exponent 4)
-  /// whose curvature instead rises smoothly from 0 at the tangent point to a
-  /// peak at the 45° point, matching Apple's continuous/"smooth" corner
-  /// style; at `cornerRadius == min(radii)` this produces a true squircle
-  /// rather than a circle.
+  /// At `0`, corners are circular arcs, matching [RRect] and
+  /// [RoundedRectangleBorder]: curvature jumps discontinuously from 0 on the
+  /// flat edge to `1/cornerRadius` at the tangent point. At `1`, they
+  /// approximate Flutter's [RSuperellipse] — what [RoundedSuperellipseBorder]
+  /// paints, and the Apple/SwiftUI `.continuous` shape — where curvature
+  /// instead ramps up from 0, so there is no tangent point to see.
   ///
-  /// Values in between lerp the corner profile, so it can be animated — e.g.
-  /// a fully rounded blob morphs from a true circle (`0`) to an
-  /// Apple-squircle (`1`). Both profiles agree exactly on flat edges, so
-  /// only the corner regions move.
+  /// It is an approximation, not that shape: Impeller builds the corner from
+  /// a superellipse segment patched with a circular arc, which has no
+  /// closed-form distance and so cannot go in an SDF. This uses a single
+  /// superellipse fitted to it — see `cornerProfile` for the budget, and
+  /// below for the two properties that *are* exact.
+  ///
+  /// The corner tip does *not* move: a continuous corner passes through the
+  /// same 45° point as a circular one of the same [cornerRadius], within
+  /// `(1 - cos(pi/4)) * cornerRadius` of the bounding box. What changes is the
+  /// approach — the curve leaves the flat edge about `1.36 * cornerRadius`
+  /// out instead of `1 * cornerRadius`, and dips away from it very gradually.
+  /// Corner *radii* are therefore directly comparable to Flutter's, in both
+  /// directions.
+  ///
+  /// Values in between lerp the profile, so it can be animated. The two
+  /// endpoints coincide where there is no room for the longer approach, so
+  /// continuity has no visible effect on a blob whose [cornerRadius] fills it
+  /// (a circle stays a circle; a pill's end caps stay circular, while its
+  /// long edges still gain the continuous tail).
+  ///
+  /// The fit is worst around three quarters of a radius in from the corner,
+  /// where it over-dips by ~0.007 of the radius; past ~1.3 radii it has
+  /// rejoined the flat edge while Flutter's still has a very shallow tail.
+  /// Both are well under a pixel at any usual radius, but they are there.
   ///
   /// Has no effect on ring segments (see [holeRadius], [startAngle]): those
   /// always render with circular arcs.

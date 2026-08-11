@@ -99,7 +99,7 @@ void main() {
       shine.setFloat(5, math.pi / 2); // shineDirection
       shine.setFloat(6, 16); // bevelThickness
       for (var i = 0; i < packed.length; i++) {
-        shine.setFloat(7 + i, packed[i]);
+        shine.setFloat(11 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();

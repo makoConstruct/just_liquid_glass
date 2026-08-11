@@ -1,7 +1,7 @@
 #version 460 core
 
 // Flat shader: renders the same smooth-min merged blob field as glass.frag
-// in one of three modes:
+// in one of four modes:
 //   uMode == 0: fill — each blob painted with its (possibly transparent)
 //               tint; the every-backend fallback look.
 //   uMode == 1: mask — pure coverage alpha, used with ShaderMask(dstIn) to
@@ -11,6 +11,9 @@
 //               src-over acts as a screen-toward-white blend). Its outer cut
 //               sits half a band outside the silhouette so it fully covers
 //               the glass edge's AA fringe.
+//   uMode == 3: opaque fill — what the glass path renders when every tint is
+//               fully opaque, drawn as an ordinary canvas shader with no
+//               BackdropFilter at all. See the mode's branch in main().
 // Runs as an ordinary canvas shader, so it works on every backend
 // (Skia and Impeller) including web.
 //
@@ -25,15 +28,19 @@ precision highp float;
 // Set from Dart; float uniform indices start at 0.
 uniform float uBlobCount;      // 0
 uniform float uBlendRadius;    // 1
-uniform float uMode;           // 2 (0 = fill, 1 = mask, 2 = shine)
+uniform float uMode;           // 2 (0 = fill, 1 = mask, 2 = shine, 3 = opaque)
 uniform float uDpr;            // 3
 uniform float uShineIntensity; // 4 (shine mode only)
 uniform float uShineDirection; // 5 (shine mode only)
-uniform float uBevelThickness; // 6 (shine mode only)
+uniform float uBevelThickness; // 6 (shine and opaque modes)
 
-// 5 vec4 per blob, up to 16 blobs (float indices 7..326).
+// Rim darkening across the bevel band; opaque-fill mode only, where it
+// stands in for glass.frag's uEdgeTint. Same meaning, same weighting.
+uniform vec4 uEdgeTint;        // 7..10
+
+// 6 vec4 per blob, up to 16 blobs (float indices 11..394).
 // Layout identical to glass.frag.
-uniform vec4 uBlobs[80];
+uniform vec4 uBlobs[96];
 
 out vec4 fragColor;
 
@@ -41,7 +48,7 @@ out vec4 fragColor;
 // SDF core (keep in sync with glass.frag)
 // ---------------------------------------------------------------------------
 
-float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
+float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle, vec4 se) {
   // Into the blob's local frame.
   vec2 q = p - a.xy;
   q = vec2(a.z * q.x + a.w * q.y, -a.w * q.x + a.z * q.y);
@@ -65,27 +72,49 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle) {
     d = dc - rb;
   } else {
     // Rounded box; cornerRadius is pre-clamped to min(radii) on the CPU, so
-    // cornerRadius == min(radii) yields a stadium/circle (or, at full
-    // continuity, a squircle). A negative r is the exit-lift encoding: it
-    // reduces the field to the point field lifted by -min(radii).
+    // cornerRadius == min(radii) yields a stadium/circle. A negative r is the
+    // exit-lift encoding: it reduces the field to the point field lifted by
+    // -min(radii).
     float r = b.z;
+    float reach = r;
     vec2 e = abs(q) - (b.xy - vec2(r));
-    vec2 e0 = max(e, vec2(0.0));
-    float corner = length(e0);
+    float corner = length(max(e, vec2(0.0)));
     if (squircle > 0.0) {
-      // Continuous ("squircle") corner: blend toward the superellipse norm
-      // (exponent 4) instead of the circular arc's Euclidean norm. Curvature
-      // rises from 0 at the tangent point to a peak at 45°, instead of
-      // jumping straight from 0 to 1/r — this is what gives Apple-style
-      // corners their "continuous" look. Where e0 has a zero component
-      // (i.e. on a flat edge, not in the corner square) the two norms agree
-      // exactly, so any blend is a strict generalization — and fractional
-      // squircle lerps the corner profile, morphing circle -> squircle.
-      vec2 e4 = e0 * e0;
-      e4 = e4 * e4;
-      corner = mix(corner, sqrt(sqrt(e4.x + e4.y)), squircle);
+      // Apple-style continuous corner, fitted to Flutter's RSuperellipse.
+      // A fit, not that curve: Impeller's superellipse-plus-arc corner has
+      // no closed-form distance, so it can't be an SDF (see cornerProfile in
+      // packing.dart for the budget). It keeps the circular corner's 45°
+      // point exactly and spends the continuity on the approach: the curve
+      // leaves the flat edge further out, at `reach` rather than r, so
+      // curvature ramps up from 0 instead of stepping to 1/r at a tangent
+      // point. That is a superellipse of degree `n` > 2 in the corner's
+      // local frame; both come from the CPU, which also folds the 0..1
+      // continuity into them, so this arm lands exactly on the circular
+      // corner as squircle -> 0.
+      //
+      // The reach depends on the edge's own half-extent (a wide pill gets a
+      // long tail lengthwise and an exactly circular end cap), so the two
+      // axes carry different profiles. They agree on the corner diagonal —
+      // both are pinned to the same 45° point — and are blended across it
+      // over a radius' width. Switching outright would instead step the
+      // field by ~8% of its own value along that diagonal, straight through
+      // the bevel band.
+      vec2 room = b.xy - abs(q); // corner-local depth from each edge
+      float t = clamp(0.5 + 0.5 * (room.x - room.y) / r, 0.0, 1.0);
+      t = t * t * (3.0 - 2.0 * t);
+      reach = mix(se.z, se.x, t);
+      float n = mix(se.w, se.y, t);
+      e = abs(q) - (b.xy - vec2(reach));
+      // The floor keeps pow() off exactly 0, where drivers disagree; it
+      // shifts the norm by less than the floor itself.
+      vec2 e0 = max(e, vec2(1e-6));
+      // (x^n + y^n)^(1/n), factored through the larger component: two pow
+      // calls instead of three, and the base of the inner one stays in
+      // (0, 1] however large n and e0 get.
+      float m = max(e0.x, e0.y);
+      corner = m * pow(1.0 + pow(min(e0.x, e0.y) / m, n), 1.0 / n);
     }
-    d = corner + min(max(e.x, e.y), 0.0) - r;
+    d = corner + min(max(e.x, e.y), 0.0) - reach;
 
     // Circular hole around the blob center.
     if (b.w > 0.0) {
@@ -115,9 +144,9 @@ float sceneD(vec2 p) {
   float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
-      vec4 extra = uBlobs[i * 5 + 4];
-      float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], extra.x);
+      vec4 extra = uBlobs[i * 6 + 4];
+      float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
+          uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
@@ -135,9 +164,9 @@ float scene(vec2 p, out vec4 tint) {
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
-      vec4 extra = uBlobs[i * 5 + 4];
-      float di = sdBlob(p, uBlobs[i * 5], uBlobs[i * 5 + 1],
-          uBlobs[i * 5 + 2], extra.x);
+      vec4 extra = uBlobs[i * 6 + 4];
+      float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
+          uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
@@ -150,7 +179,7 @@ float scene(vec2 p, out vec4 tint) {
       // weight that drives the push (their h is exactly 0, and rendered
       // blobs never take the s arm, whose t is meaningless for them).
       float hc = extra.y == 0.0 ? h * h * (3.0 - 2.0 * h) : s;
-      tint = mix(tint, uBlobs[i * 5 + 3], hc);
+      tint = mix(tint, uBlobs[i * 6 + 3], hc);
     }
   }
   return d - bump;
@@ -165,7 +194,9 @@ void main() {
   vec4 outCol = vec4(0.0);
   if (d < 2.0) {
     // Gradient of the merged field; see glass.frag for why the epsilon
-    // widens in shine mode and why the magnitude stays unnormalized.
+    // widens in the bevel-aware modes (shine, opaque fill — the latter
+    // matching glass.frag exactly, since it stands in for it) and why the
+    // magnitude stays unnormalized.
     // Mask mode runs over the whole child layer every frame, so it skips
     // the gradient (4 extra field evaluations) and accepts slightly wider
     // AA where merges compress the field.
@@ -186,7 +217,27 @@ void main() {
     float w = max(0.75 * slope / uDpr, 1e-3);
     float coverage = 1.0 - smoothstep(-w, w, d);
 
-    if (uMode > 1.5) {
+    if (uMode > 2.5) {
+      // Opaque fill: the glass path's picture for a layer whose every tint
+      // is fully opaque, with no BackdropFilter behind it. Legitimate
+      // because at tint.a == 1 glass.frag's mix(bg.rgb, tint.rgb, tint.a)
+      // multiplies the sampled backdrop out entirely — refraction and blur
+      // displace and smear a texture that then contributes nothing — so all
+      // that survives of that pass is the tint, the edge tint and the same
+      // coverage. Everything below is copied from glass.frag's rim block
+      // with the bg term dropped; keep them in sync.
+      float rim = 1.0 - clamp(-d / max(uBevelThickness, 1e-3), 0.0, 1.0);
+      float ease = rim * rim * (3.0 - 2.0 * rim);
+      vec3 col = mix(tint.rgb, uEdgeTint.rgb,
+          clamp(uEdgeTint.a, 0.0, 1.0) * ease * slope);
+      // tint.a is 1 wherever the field is covered (every blob is opaque, and
+      // the merge only ever mixes opaque tints together), so this matches
+      // glass.frag's alpha == coverage; it is written out the long way so a
+      // stray translucent blob degrades toward the fill look rather than
+      // punching an opaque hole.
+      float alpha = coverage * clamp(tint.a, 0.0, 1.0);
+      outCol = vec4(min(col, vec3(1.0)) * alpha, alpha);
+    } else if (uMode > 1.5) {
       // Shine: long thin highlight arcs hugging the rim, iOS-26 style.
       // Follows liquid_glass_renderer's render.glsl conventions: the band is
       // a thin (~1px) Lorentzian near d == 0 (radially hard-edged,

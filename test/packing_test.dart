@@ -252,7 +252,10 @@ void main() {
     expect(data[floatsPerBlob + 16], 0);
   });
 
-  test('any cornerContinuity never selects the capped-arc path', () {
+  test('cornerContinuity does not disqualify the capped-arc path', () {
+    // A ring segment is fully rounded by construction, and there the
+    // continuous profile *is* the circular one, so the round end caps stay
+    // available at any continuity.
     const blob = GlassBlob(
       center: Offset.zero,
       radii: Size(50, 50),
@@ -262,7 +265,44 @@ void main() {
       cornerContinuity: 0.5,
       tint: white,
     );
-    expect(isCappedArc(blob), isFalse);
+    expect(isCappedArc(blob), isTrue);
+    expect(cornerProfile(50, 50, 0.5), (reach: 50.0, exponent: 2.0));
+  });
+
+  group('cornerProfile', () {
+    test('is the circular corner at zero continuity', () {
+      expect(cornerProfile(100, 20, 0), (reach: 20.0, exponent: 2.0));
+    });
+
+    test('is the circular corner once the radius fills the box', () {
+      // Impeller's rounded superellipse degenerates to a true circle at
+      // radius == half-extent, so continuity has nothing left to spend.
+      expect(cornerProfile(20, 20, 1), (reach: 20.0, exponent: 2.0));
+    });
+
+    test('reaches further along the edge as continuity rises', () {
+      final quarter = cornerProfile(100, 20, 0.25);
+      final full = cornerProfile(100, 20, 1);
+      expect(quarter.reach, greaterThan(20));
+      expect(quarter.reach, lessThan(full.reach));
+      expect(quarter.exponent, greaterThan(2));
+      expect(quarter.exponent, lessThan(full.exponent));
+      expect(full.reach, closeTo(1.36 * 20, 1e-9));
+    });
+
+    test('keeps the 45° point on the circular corner at every continuity', () {
+      // The defining constraint: the corner tip never moves, so a continuous
+      // corner is directly comparable to a circular one of the same radius.
+      for (final t in [0.0, 0.1, 0.5, 0.9, 1.0]) {
+        for (final half in [21.0, 30.0, 100.0]) {
+          final p = cornerProfile(half, 20, t);
+          // Depth of the profile's own 45° point below the bounding box.
+          final gap = p.reach * (1 - math.pow(2, -1 / p.exponent));
+          expect(gap, closeTo(cornerGap * 20, 1e-9),
+              reason: 'continuity $t, half-extent $half');
+        }
+      }
+    });
   });
 
   test('distortion and range pack into their slots, defaulting to 0', () {
