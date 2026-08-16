@@ -125,9 +125,13 @@ void main() {
       shader.setFloat(14, options.edgeTint.g);
       shader.setFloat(15, options.edgeTint.b);
       shader.setFloat(16, options.edgeTint.a);
+      shader.setFloat(17, options.shadowRadius); // uShadow
+      shader.setFloat(18, options.shadowIntensity);
+      shader.setFloat(19, options.shadowOffset.dx);
+      shader.setFloat(20, options.shadowOffset.dy);
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(17 + i, packed[i]);
+        shader.setFloat(21 + i, packed[i]);
       }
 
       // The shine is a separate pass drawn topmost, outside the GlassLayer
@@ -146,7 +150,7 @@ void main() {
       shine.setFloat(5, options.shineDirection);
       shine.setFloat(6, options.bevelThickness);
       for (var i = 0; i < packed.length; i++) {
-        shine.setFloat(11 + i, packed[i]);
+        shine.setFloat(15 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();
@@ -202,7 +206,7 @@ void main() {
           ),
         ]);
         for (var i = 0; i < packed.length; i++) {
-          shader.setFloat(17 + i, packed[i]);
+          shader.setFloat(21 + i, packed[i]);
         }
         final recorder = ui.PictureRecorder();
         ui.Canvas(recorder).drawRect(

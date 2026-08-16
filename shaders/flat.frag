@@ -38,7 +38,13 @@ uniform float uBevelThickness; // 6 (shine and opaque modes)
 // stands in for glass.frag's uEdgeTint. Same meaning, same weighting.
 uniform vec4 uEdgeTint;        // 7..10
 
-// 6 vec4 per blob, up to 16 blobs (float indices 11..394).
+// Drop shadow: (blur radius, peak alpha, offset.x, offset.y) in logical
+// pixels; see glass.frag. Drawn by the two modes that stand in for the glass
+// pass — fill and opaque fill — and by neither of the two that draw *over*
+// it (the child mask and the shine).
+uniform vec4 uShadow;          // 11..14
+
+// 6 vec4 per blob, up to 16 blobs (float indices 15..398).
 // Layout identical to glass.frag.
 uniform vec4 uBlobs[96];
 
@@ -191,7 +197,19 @@ void main() {
   vec4 tint;
   float d = scene(p, tint);
 
-  vec4 outCol = vec4(0.0);
+  // Drop shadow (fill and opaque-fill modes only — the mask and the shine
+  // draw above the glass, not below it). Kept identical to glass.frag's
+  // block; see it for the falloff.
+  vec4 shadowCol = vec4(0.0);
+  if (uShadow.y > 0.0 && (uMode < 0.5 || uMode > 2.5)) {
+    float ds = d;
+    if (dot(uShadow.zw, uShadow.zw) > 0.0) ds = sceneD(p - uShadow.zw);
+    float sr = max(uShadow.x, 1e-3);
+    shadowCol =
+        vec4(0.0, 0.0, 0.0, uShadow.y * (1.0 - smoothstep(-sr, sr, ds)));
+  }
+
+  vec4 outCol = shadowCol;
   if (d < 2.0) {
     // Gradient of the merged field; see glass.frag for why the epsilon
     // widens in the bevel-aware modes (shine, opaque fill — the latter
@@ -275,6 +293,13 @@ void main() {
       float alpha = coverage * clamp(tint.a, 0.0, 1.0);
       outCol = vec4(tint.rgb * alpha, alpha); // premultiplied tint fill
     }
+    // srcOver of the pass over its shadow. Occluded by `coverage`, not by
+    // the fill's own alpha: a translucent (or fully transparent) tint hides
+    // its shadow's interior exactly like the glass path's opaque coverage
+    // does, so the two paths cast the same visible halo. Zero in the mask
+    // and shine modes, where shadowCol is 0. Keep the arithmetic identical
+    // to glass.frag's — opaque_path_test compares the two bit for bit.
+    outCol += shadowCol * (1.0 - coverage);
   }
 
   fragColor = outCol;

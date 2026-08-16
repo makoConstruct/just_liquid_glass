@@ -1,3 +1,40 @@
+# 0.7.0
+- Drop shadows, on by default (`GlassOptions.shadowRadius`,
+  `shadowIntensity`, `shadowOffset`; `shadowIntensity: 0` restores the old
+  look and all of its cost). iOS puts one under every glass control, and
+  without it glass over a same-toned backdrop loses its footing. It is cast
+  by the same merged distance field the glass is, read on its outside
+  instead of its inside, so it follows the blobby silhouette — merge
+  bridges, distortion pushes, sector cuts and all — with no second pass, no
+  extra texture, and no path to build: the glass pass (or the flat/opaque
+  fill, which cast it too) emits it under its own coverage in the same
+  fragment. The falloff is a smoothstep across ±radius, which is a blurred
+  edge's profile to within a rounding step and has *compact* support, so
+  every clip and bounding rect grows by exactly the radius (biased by the
+  offset) and no more. A layer usually reaches its own edge, so the shadow
+  is drawn outside the `GlassLayer`'s bounds, like every other Flutter
+  shadow — an ancestor that clips will cut it.
+- Fixed the child shifting about a pixel and jittering back and forth while a
+  blob animates (present since 0.6.0, at any `childRefractionIntensity`,
+  including 0). The blob-region clip bounds the child's save layer, and
+  Impeller sizes and positions that texture in *physical* pixels in global
+  space, so the clip has to land on the physical grid — rounding it to whole
+  logical pixels, as it did, leaves it off-grid at any fractional device pixel
+  ratio (2.625 on a typical Android phone) or fractional layer position, and
+  the child gets rasterized at a different subpixel phase every frame the
+  bounds move. Both the clip and the child refraction filter's texture rect
+  now snap to the physical grid; `test/pixel_snap_test.dart` pins it.
+- The child is now refracted too (glass mode): its content bends through the
+  bevel like the backdrop does. Strength comes from
+  `GlassOptions.childRefractionIntensity`, which defaults to following
+  `refractionIntensity`; set it to 0 for the old flat-child look. Costs about
+  what the old mask did — the refraction runs in the same single pass (a new
+  `child.frag` via an ordinary `ImageFilterLayer`, no backdrop read) that
+  replaces the `ShaderMask`, evaluating coverage at the destination pixel
+  while fetching color from the displaced source, so the silhouette stays
+  crisp while the content swims inside it. Flat mode and non-Impeller
+  backends keep the plain mask.
+
 # 0.6.0
 - Continuous corners are now fitted to Flutter's `RSuperellipse`
   (`RoundedSuperellipseBorder`, SwiftUI's `.continuous`) instead of an

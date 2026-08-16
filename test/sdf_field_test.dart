@@ -17,7 +17,7 @@ Future<ui.Image> _renderBlobs(List<GlassBlob> blobs) async {
   shader.setFloat(6, 1);
   final packed = packBlobs(blobs);
   for (var i = 0; i < packed.length; i++) {
-    shader.setFloat(11 + i, packed[i]);
+    shader.setFloat(15 + i, packed[i]);
   }
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
@@ -61,7 +61,7 @@ void main() {
     shader.setFloat(6, 1); // bevelThickness (unused in fill mode)
     final packed = packBlobs(blobs);
     for (var i = 0; i < packed.length; i++) {
-      shader.setFloat(11 + i, packed[i]);
+      shader.setFloat(15 + i, packed[i]);
     }
 
     final recorder = ui.PictureRecorder();
@@ -110,7 +110,7 @@ void main() {
       shader.setFloat(6, 1); // bevelThickness (unused in fill mode)
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(11 + i, packed[i]);
+        shader.setFloat(15 + i, packed[i]);
       }
       final recorder = ui.PictureRecorder();
       ui.Canvas(recorder).drawRect(
@@ -409,7 +409,7 @@ void main() {
       }
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(17 + i, packed[i]);
+        shader.setFloat(21 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();

@@ -54,8 +54,14 @@ GlassLayer(
     blurRadius: 6,
     bevelThickness: 16,
     refractionIntensity: 24,
+    // childRefractionIntensity: 0, // child content refracts too by default;
+                                    // set 0 for a flat child, or any value
+                                    // to differ from refractionIntensity
     shineIntensity: 0.4,
     edgeTint: Color(0x26000000), // rim darkening; keeps white-on-white legible
+    shadowRadius: 20,            // drop shadow, on by default
+    shadowIntensity: 0.15,       // 0 turns it off entirely
+    shadowOffset: Offset(0, 2),
   ),
   blobs: [
     // A circle.
@@ -110,6 +116,24 @@ Each `GlassBlob` is a rounded box with half-extents `radii`, rotated by
   get a hard cut.
 - `tint` — the blob color. In glass mode it is mixed over the refracted
   backdrop with strength `tint.a`; in flat mode it is the fill itself.
+
+### Drop shadow
+
+The shadow is the same distance field read on its outside: alpha falls from
+`shadowIntensity` a radius inside the silhouette (hidden under the glass) to
+half of it at the silhouette to 0 exactly `shadowRadius` out, which is a
+blurred edge's profile. So it follows the merged blobby shape — bridges,
+distortion bulges, sector cuts — without a second pass, an extra texture, or a
+path to build, and it costs one more field evaluation only when
+`shadowOffset` is non-zero. It is drawn by the glass pass itself, beneath the
+child, and is occluded by the blobs' own coverage, so an offset shadow never
+shows through the glass casting it.
+
+Blobs usually reach the edge of their `GlassLayer`, so the shadow is painted
+*outside* the layer's bounds — normal for a Flutter shadow, but an ancestor
+that clips (a `ClipRect`, an overflowing `Stack`, a scroll viewport) will cut
+it. Give the layer room, or set `shadowIntensity: 0`, which also drops the
+shadow's padding from every clip the layer takes.
 
 ## Modes and platform support
 

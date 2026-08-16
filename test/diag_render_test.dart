@@ -85,7 +85,7 @@ void main() {
       shader.setFloat(16, 0.15);
       final packed = packBlobs(blobs);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(17 + i, packed[i]);
+        shader.setFloat(21 + i, packed[i]);
       }
 
       final flatProgram =
@@ -99,7 +99,7 @@ void main() {
       shine.setFloat(5, math.pi / 2); // shineDirection
       shine.setFloat(6, 16); // bevelThickness
       for (var i = 0; i < packed.length; i++) {
-        shine.setFloat(11 + i, packed[i]);
+        shine.setFloat(15 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();

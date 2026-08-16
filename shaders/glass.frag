@@ -67,7 +67,12 @@ uniform vec4 uClip;            // 9..12
 // Alpha scales the strength; fully transparent disables it.
 uniform vec4 uEdgeTint;        // 13..16
 
-// 6 vec4 per blob, up to 16 blobs (float indices 17..400):
+// Drop shadow, cast by the same field: (blur radius, peak alpha, offset.x,
+// offset.y) in logical pixels. Alpha 0 disables it — and, because the Dart
+// side then drops the shadow padding from the clip, costs nothing at all.
+uniform vec4 uShadow;          // 17..20
+
+// 6 vec4 per blob, up to 16 blobs (float indices 21..404):
 //   [0] center.x, center.y, cos(rotation), sin(rotation)
 //   [1] radii.x, radii.y, cornerRadius, holeRadius (<= 0 means no hole)
 //   [2] sectorAxis.x, sectorAxis.y, cos(halfAperture) (-2 = full circle),
@@ -255,10 +260,35 @@ void main() {
   vec4 tint;
   float d = scene(p, tint);
 
-  // Premultiplied output. Transparent outside the blobs: uTexture may be
-  // pre-blurred, and the srcOver composite is what restores the sharp
-  // backdrop there — this pass must not repaint it.
-  vec4 outCol = vec4(0.0);
+  // Drop shadow, underneath everything else this pass draws. The same merged
+  // field, read on its outside: a gaussian-blurred silhouette's alpha profile
+  // across a straight edge is an erfc, and smoothstep over +-radius tracks
+  // that closely enough to be indistinguishable at these opacities while
+  // having compact support — the shadow is exactly 0 one radius out, so the
+  // Dart side can pad the clip by that much and no more. Curvature is not
+  // corrected for (a real blur rounds tight corners off further); at a
+  // silhouette this soft it does not read.
+  //
+  // Only the *outside* half is ever seen: the glass composites over it below
+  // at its own coverage, so an offset shadow does not show through the glass
+  // that casts it — matching iOS, and matching what an opaque tint would do
+  // anyway.
+  vec4 shadowCol = vec4(0.0);
+  if (uShadow.y > 0.0) {
+    // An offset shadow reads the field a second time, at the shifted point;
+    // an unoffset one is exactly the field already computed.
+    float ds = d;
+    if (dot(uShadow.zw, uShadow.zw) > 0.0) ds = sceneD(p - uShadow.zw);
+    float sr = max(uShadow.x, 1e-3);
+    // Premultiplied black: rgb stays 0, so compositing below is alpha-only.
+    shadowCol =
+        vec4(0.0, 0.0, 0.0, uShadow.y * (1.0 - smoothstep(-sr, sr, ds)));
+  }
+
+  // Premultiplied output, and transparent where neither the blobs nor their
+  // shadow reach: uTexture may be pre-blurred, and the srcOver composite is
+  // what restores the sharp backdrop there — this pass must not repaint it.
+  vec4 outCol = shadowCol;
 
   if (d < 2.0) {
     // Gradient of the merged field. The epsilon widens with the bevel so the
@@ -280,6 +310,9 @@ void main() {
     float w = max(0.75 * slope / uDpr, 1e-3);
     float coverage = 1.0 - smoothstep(-w, w, d);
 
+    // The shadow is re-composited under the glass at the end of the block,
+    // so start the glass's own color from nothing.
+    outCol = vec4(0.0);
     if (coverage > 0.001) {
       // Rim factor: 1 at the silhouette, falling to 0 at bevelThickness in.
       float rim = 1.0 - clamp(-d / max(uBevelThickness, 1e-3), 0.0, 1.0);
@@ -317,6 +350,12 @@ void main() {
 
       outCol = vec4(min(col, vec3(1.0)) * coverage, coverage);
     }
+    // srcOver of the glass over its own shadow. Kept in exactly this form —
+    // same operands, same order — as flat.frag's matching line: the opaque
+    // mode there has to reproduce this pass bit for bit (opaque_path_test),
+    // and a rearrangement that lets one program fuse a multiply-add the
+    // other doesn't is enough to show up as an off-by-one channel.
+    outCol += shadowCol * (1.0 - coverage);
   }
 
   fragColor = outCol;
