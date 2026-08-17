@@ -50,7 +50,8 @@ Other features:
 ```dart
 GlassLayer(
   options: const GlassOptions(
-    blendRadius: 32,       // how far apart blobs start fusing
+    blendRadius: 32,       // how far apart blobs start fusing (a blob can
+                           // set its own; a junction takes the smaller)
     blurRadius: 6,
     bevelThickness: 16,
     refractionIntensity: 24,

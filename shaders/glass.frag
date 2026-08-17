@@ -46,33 +46,33 @@ uniform vec2 uSize;
 // masked child, so it is not part of this pass.)
 uniform float uDpr;            // 2
 uniform float uBlobCount;      // 3
-uniform float uBlendRadius;    // 4
-uniform float uBevelThickness; // 5
-uniform float uRefraction;     // 6
+uniform float uBevelThickness; // 4
+uniform float uRefraction;     // 5
+// (the smooth-min blend radius is per blob; see uBlobs[i * 6 + 4].w)
 
 // The GlassLayer's origin within the render target, in logical pixels.
 // FlutterFragCoord() is anchored to the full render target, but blob centers
 // are in GlassLayer-local coordinates; this converts between the two.
-uniform vec2 uOrigin;          // 7, 8
+uniform vec2 uOrigin;          // 6, 7
 
 // The effective clip of this filter (padded blob bounds intersected with
 // the GlassLayer and the render target; set at paint time alongside
 // uOrigin), LTRB in logical GlassLayer-local pixels. uTexture has no valid
 // content outside it (see uSize note), so backdrop samples are clamped into
 // this rect.
-uniform vec4 uClip;            // 9..12
+uniform vec4 uClip;            // 8..11
 
 // Edge tint: a separate color layered over the base tint near the
 // silhouette, strongest at the rim (see the Beer-Lambert note in main).
 // Alpha scales the strength; fully transparent disables it.
-uniform vec4 uEdgeTint;        // 13..16
+uniform vec4 uEdgeTint;        // 12..15
 
 // Drop shadow, cast by the same field: (blur radius, peak alpha, offset.x,
 // offset.y) in logical pixels. Alpha 0 disables it — and, because the Dart
 // side then drops the shadow padding from the clip, costs nothing at all.
-uniform vec4 uShadow;          // 17..20
+uniform vec4 uShadow;          // 16..19
 
-// 6 vec4 per blob, up to 16 blobs (float indices 21..404):
+// 6 vec4 per blob, up to 16 blobs (float indices 20..403):
 //   [0] center.x, center.y, cos(rotation), sin(rotation)
 //   [1] radii.x, radii.y, cornerRadius, holeRadius (<= 0 means no hole)
 //   [2] sectorAxis.x, sectorAxis.y, cos(halfAperture) (-2 = full circle),
@@ -80,7 +80,8 @@ uniform vec4 uShadow;          // 17..20
 //   [3] tint r, g, b, a
 //   [4] cornerContinuity (0 circular .. 1 continuous),
 //       distortion (!= 0 marks a non-rendered distortion blob),
-//       distortionRange (falloff distance), reserved (0)
+//       distortionRange (falloff distance), blendRadius (already resolved
+//       against the layer default on the CPU)
 //   [5] corner profile, packed on the CPU with the continuity already lerped
 //       in: reach.x, exponent.x, reach.y, exponent.y (see packing.dart)
 uniform vec4 uBlobs[96];
@@ -202,9 +203,29 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle, vec4 se) {
 // have extra.y == 0, so their bump term is zero. The lift constant stays
 // well above the 1e4 sentinel but far from the 1e9 quantization cliff.
 
+// Per-blob blend radius (extra.w). The smooth-min's k is a property of the
+// *operation*, not of one operand, so a fold that merged each blob at its own
+// k would set every junction's width from whichever blob came later in the
+// list. Instead each step merges at min(kAcc, k_i), where kAcc tracks the
+// blend radius of whatever currently owns the field: it is carried through
+// the same weight h that carries the distance, so it follows the locally
+// nearest blob rather than the whole list. Two blobs therefore fuse over the
+// smaller of their radii whichever order they are packed in, a blob with
+// blendRadius 0 keeps a hard junction against everything, and a crisp blob at
+// one end of a layer does not sharpen junctions at the other. kAcc starts at
+// the sentinel so the first merge takes that blob's own k, and distortion
+// blobs leave it alone for free: their h is exactly 0, which makes both the
+// distance and the kAcc step bitwise no-ops.
+//
+// That step is written `kAcc += (k_i - kAcc) * h` rather than as the
+// equivalent mix() so that a layer whose blobs all share one radius — every
+// layer that never touches GlassBlob.blendRadius — carries it through the
+// fold *exactly*: the difference is 0, so no rounding accumulates and the
+// field stays bit-identical to what a single global radius produced.
+
 float sceneD(vec2 p) {
-  float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float kAcc = 1e4;
   float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
@@ -212,8 +233,10 @@ float sceneD(vec2 p) {
       float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
           uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
+      float k = max(min(kAcc, extra.w), 1e-4);
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
+      kAcc += (extra.w - kAcc) * h;
       float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
       bump += extra.y * (t * t * (3.0 - 2.0 * t));
     }
@@ -222,8 +245,8 @@ float sceneD(vec2 p) {
 }
 
 float scene(vec2 p, out vec4 tint) {
-  float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float kAcc = 1e4;
   float bump = 0.0;
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
@@ -232,8 +255,10 @@ float scene(vec2 p, out vec4 tint) {
       float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
           uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
+      float k = max(min(kAcc, extra.w), 1e-4);
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
+      kAcc += (extra.w - kAcc) * h;
       float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
       float s = t * t * (3.0 - 2.0 * t);
       bump += extra.y * s;

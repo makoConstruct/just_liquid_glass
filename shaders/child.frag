@@ -39,15 +39,15 @@ uniform vec2 uSize;
 
 // Set from Dart; float uniform indices start at 2.
 uniform float uBlobCount;      // 2
-uniform float uBlendRadius;    // 3
-uniform float uBevelThickness; // 4
-uniform float uRefraction;     // 5 (child refraction, not the backdrop's)
+uniform float uBevelThickness; // 3
+uniform float uRefraction;     // 4 (child refraction, not the backdrop's)
+// (the smooth-min blend radius is per blob; see uBlobs[i * 6 + 4].w)
 
 // The rect the input texture spans, LTRB in GlassLayer-local logical px —
 // the same region the child is clipped to on the Dart side.
-uniform vec4 uRegion;          // 6..9
+uniform vec4 uRegion;          // 5..8
 
-// 6 vec4 per blob, up to 16 blobs (float indices 10..393).
+// 6 vec4 per blob, up to 16 blobs (float indices 9..392).
 // Layout identical to glass.frag.
 uniform vec4 uBlobs[96];
 
@@ -148,11 +148,13 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle, vec4 se) {
 
 // Distortion blobs (extra.y != 0) run the exact same loop body as rendered
 // blobs; see the matching comment in glass.frag for how the lifted merge
-// distance and the subtracted bump work.
+// distance and the subtracted bump work — and, just below it, for why the
+// per-blob blend radius (extra.w) folds in as min(kAcc, k_i) with kAcc
+// carried through h.
 
 float sceneD(vec2 p) {
-  float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float kAcc = 1e4;
   float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
@@ -160,8 +162,10 @@ float sceneD(vec2 p) {
       float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
           uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
+      float k = max(min(kAcc, extra.w), 1e-4);
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
+      kAcc += (extra.w - kAcc) * h;
       float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
       bump += extra.y * (t * t * (3.0 - 2.0 * t));
     }

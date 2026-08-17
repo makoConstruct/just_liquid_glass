@@ -19,7 +19,7 @@ const int floatsPerBlob = 24;
 /// [ 4] radii.x    [ 5] radii.y    [ 6] cornerRadius  [ 7] holeRadius (0 = none)
 /// [ 8] axis.x     [ 9] axis.y     [10] cos(halfAp) (-2 = full)  [11] sin(halfAp)
 /// [12] tint.r     [13] tint.g     [14] tint.b        [15] tint.a
-/// [16] cornerContinuity  [17] distortion  [18] distortionRange  [19] reserved
+/// [16] cornerContinuity  [17] distortion  [18] distortionRange  [19] blendRadius
 /// [20] reachX     [21] exponentX  [22] reachY        [23] exponentY
 /// ```
 /// A negative `[11]` marks a circular ring segment (circular radii, fully
@@ -37,7 +37,14 @@ const int floatsPerBlob = 24;
 /// of up to `[17]` from the merged field, fading over `[18]` past the blob's
 /// surface — and mixes its tint at that same kernel weight; see
 /// [GlassBlob.distortion].
-Float32List packBlobs(List<GlassBlob> blobs) {
+///
+/// `[19]` is the blob's own smooth-min blend radius, already resolved against
+/// [defaultBlendRadius] (which is [GlassOptions.blendRadius]) and clamped by
+/// [resolveBlendRadius] — there is no global blend-radius uniform.
+Float32List packBlobs(
+  List<GlassBlob> blobs, {
+  required double defaultBlendRadius,
+}) {
   assert(blobs.length <= maxBlobs,
       'GlassLayer supports at most $maxBlobs blobs, got ${blobs.length}');
   // Distortion blobs pack after every rendered blob regardless of list
@@ -107,18 +114,36 @@ Float32List packBlobs(List<GlassBlob> blobs) {
     data[o + 16] = continuity;
     data[o + 17] = blob.distortion;
     data[o + 18] = math.max(blob.distortionRange, 0);
+    data[o + 19] = resolveBlendRadius(blob, defaultBlendRadius);
 
     // One profile per axis, kept whole within one vec4 for the shader: the
     // corner's reach along an edge depends on that edge's own half-extent (a
     // wide pill gets a long tail lengthwise and an exactly circular end cap).
     final x = cornerProfile(rx, corner, continuity);
     final y = cornerProfile(ry, corner, continuity);
-    data[o + 20] = x.reach; // [19] stays 0
+    data[o + 20] = x.reach;
     data[o + 21] = x.exponent;
     data[o + 22] = y.reach;
     data[o + 23] = y.exponent;
   }
   return data;
+}
+
+/// Largest blend radius the shaders accept, in logical pixels.
+///
+/// Well past anything useful, and there for the field's sake rather than the
+/// look's: the merge fold starts from a 1e4 sentinel and parks distortion
+/// blobs at 4e4, both of which have to stay many blend radii away from the
+/// real geometry for the fold's clamps to saturate the way it assumes.
+const double maxBlendRadius = 1000;
+
+/// This blob's smooth-min blend radius: its own [GlassBlob.blendRadius] when
+/// it sets one, else the layer's [defaultBlendRadius]. Negatives (which would
+/// invert the merge) and absurd values are clamped away here, so the shaders
+/// can trust slot `[19]`.
+double resolveBlendRadius(GlassBlob blob, double defaultBlendRadius) {
+  final r = blob.blendRadius ?? defaultBlendRadius;
+  return r.isNaN ? 0 : r.clamp(0.0, maxBlendRadius).toDouble();
 }
 
 /// Depth of the corner's 45° point below the bounding box, in units of the

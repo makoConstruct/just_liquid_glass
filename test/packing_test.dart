@@ -17,7 +17,7 @@ void main() {
         cornerRadius: 5,
         tint: Color(0x80FF0000),
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data.length, floatsPerBlob);
     expect(data[0], 10);
     expect(data[1], 20);
@@ -39,7 +39,7 @@ void main() {
         radii: Size(30, 40),
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[6], 30);
   });
 
@@ -52,7 +52,7 @@ void main() {
         radii: Size(-26, -26),
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[4], -26);
     expect(data[5], -26);
     expect(data[6], -26);
@@ -64,7 +64,7 @@ void main() {
         cornerRadius: 8,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(explicit[6], -26);
   });
 
@@ -85,7 +85,7 @@ void main() {
   test('negative-infinity holeRadius encodes as 0 (disabled)', () {
     final data = packBlobs([
       const GlassBlob(center: Offset.zero, radii: Size(10, 10), tint: white),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[7], 0);
   });
 
@@ -97,14 +97,14 @@ void main() {
         holeRadius: 4,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[7], 4);
   });
 
   test('full-circle sweep disables sector clip', () {
     final data = packBlobs([
       const GlassBlob(center: Offset.zero, radii: Size(10, 10), tint: white),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[10], -2);
   });
 
@@ -117,7 +117,7 @@ void main() {
         endAngle: math.pi,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     // mid = pi/2, half aperture = pi/2
     expect(data[8], closeTo(0, 1e-6));
     expect(data[9], closeTo(1, 1e-6));
@@ -135,7 +135,7 @@ void main() {
         endAngle: math.pi,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[11], lessThan(0));
     expect(data[11], closeTo(-1, 1e-6)); // -sin(pi/2)
   });
@@ -150,7 +150,7 @@ void main() {
         endAngle: math.pi,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[11], greaterThan(0));
   });
 
@@ -224,7 +224,7 @@ void main() {
         cornerContinuity: 3,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[6], 5); // cornerRadius stays plain (no sign encoding)
     expect(data[16], 0.25);
     expect(data[floatsPerBlob + 16], 1); // clamped
@@ -244,7 +244,7 @@ void main() {
         cornerContinuity: 1,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[16], 0);
     // Sharp rectangles keep the canonical Euclidean field: continuity would
     // only alter the exterior field, not the silhouette.
@@ -315,7 +315,7 @@ void main() {
         distortionRange: 40,
         tint: white,
       ),
-    ]);
+    ], defaultBlendRadius: 18);
     expect(data[17], 0);
     expect(data[18], 0);
     expect(data[floatsPerBlob + 17], 12);
@@ -332,7 +332,7 @@ void main() {
         tint: white,
       ),
       const GlassBlob(center: Offset(2, 0), radii: Size(10, 10), tint: white),
-    ]);
+    ], defaultBlendRadius: 18);
     // The rendered blob (center.x 2) lands in slot 0, the distorter after.
     expect(data[0], 2);
     expect(data[17], 0);
@@ -351,12 +351,48 @@ void main() {
         throwsA(isA<AssertionError>()));
   });
 
+  test('blendRadius packs per blob, falling back to the layer default', () {
+    final data = packBlobs([
+      const GlassBlob(center: Offset.zero, radii: Size(10, 10), tint: white),
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(10, 10),
+        blendRadius: 3,
+        tint: white,
+      ),
+    ], defaultBlendRadius: 18);
+    expect(data[19], 18);
+    expect(data[floatsPerBlob + 19], 3);
+  });
+
+  test('blendRadius is clamped into the range the fold can carry', () {
+    // A negative would invert the merge, and a value near the fold's own
+    // sentinels would stop their clamps from saturating.
+    final data = packBlobs([
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(10, 10),
+        blendRadius: -5,
+        tint: white,
+      ),
+      const GlassBlob(
+        center: Offset.zero,
+        radii: Size(10, 10),
+        blendRadius: double.infinity,
+        tint: white,
+      ),
+    ], defaultBlendRadius: 18);
+    expect(data[19], 0);
+    expect(data[floatsPerBlob + 19], maxBlendRadius);
+  });
+
   test('rejects more than maxBlobs', () {
     final blobs = List.generate(
       maxBlobs + 1,
       (_) => const GlassBlob(
           center: Offset.zero, radii: Size(1, 1), tint: white),
     );
-    expect(() => packBlobs(blobs), throwsA(isA<AssertionError>()));
+    expect(() => packBlobs(blobs, defaultBlendRadius: 18),
+        throwsA(isA<AssertionError>()));
   });
 }

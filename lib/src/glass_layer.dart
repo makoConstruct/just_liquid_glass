@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -163,15 +164,14 @@ class _GlassPrograms {
 
 // Uniform float indices in flat.frag.
 const int _flatBlobCount = 0;
-const int _flatBlendRadius = 1;
-const int _flatMode = 2;
-const int _flatDpr = 3;
-const int _flatShineIntensity = 4;
-const int _flatShineDirection = 5;
-const int _flatBevelThickness = 6;
-const int _flatEdgeTintStart = 7; // 7..10: rgba
-const int _flatShadowStart = 11; // 11..14: radius, intensity, offset x, y
-const int _flatBlobsStart = 15;
+const int _flatMode = 1;
+const int _flatDpr = 2;
+const int _flatShineIntensity = 3;
+const int _flatShineDirection = 4;
+const int _flatBevelThickness = 5;
+const int _flatEdgeTintStart = 6; // 6..9: rgba
+const int _flatShadowStart = 10; // 10..13: radius, intensity, offset x, y
+const int _flatBlobsStart = 14;
 
 // Values of the flat.frag uMode uniform.
 const double _modeFill = 0;
@@ -193,7 +193,6 @@ void _setFlatUniforms(
   double shineTilt = 0,
 }) {
   shader.setFloat(_flatBlobCount, resolver.count.toDouble());
-  shader.setFloat(_flatBlendRadius, options.blendRadius);
   shader.setFloat(_flatMode, mode);
   shader.setFloat(_flatDpr, dpr);
   shader.setFloat(_flatShineIntensity, options.shineIntensity);
@@ -356,7 +355,7 @@ class _BlobResolver {
 
   void _resolve(List<GlassBlob> all) {
     count = all.length;
-    packed = packBlobs(all);
+    packed = packBlobs(all, defaultBlendRadius: options.blendRadius);
     if (all.isEmpty) {
       bounds = Rect.zero;
       coverBounds = Rect.zero;
@@ -372,12 +371,18 @@ class _BlobResolver {
     // strength; overlapping distorters add, so pad by their (positive) sum.
     var distortPad = 0.0;
     var allOpaque = true;
+    // A junction merges over the smaller of its two blend radii, so the
+    // widest bulge any of them can produce is bounded by the largest radius
+    // in the layer — blobs that opt down to a smaller one only shrink it.
+    var blendPad = 0.0;
     for (final blob in all) {
       if (blob.distortion > 0) distortPad += blob.distortion;
       if (blob.tint.a < 1) allOpaque = false;
+      blendPad =
+          math.max(blendPad, resolveBlendRadius(blob, options.blendRadius));
     }
     opaque = allOpaque;
-    coverBounds = b.inflate(options.blendRadius + distortPad + 8);
+    coverBounds = b.inflate(blendPad + distortPad + 8);
     // The shadow's falloff has compact support, so its padding is exact: one
     // radius out (biased by the offset) it is 0, not merely small.
     shadowBounds = options.shadowPadding.inflateRect(coverBounds);
@@ -709,12 +714,12 @@ class GlassLayerState extends State<GlassLayer> {
 }
 
 // uOrigin and uClip float indices in glass.frag.
-const int _glassOriginX = 7;
-const int _glassOriginY = 8;
-const int _glassClipStart = 9; // 9..12: LTRB, GlassLayer-local logical px
-const int _glassEdgeTintStart = 13; // 13..16: uEdgeTint rgba
-const int _glassShadowStart = 17; // 17..20: radius, intensity, offset x, y
-const int _glassBlobsStart = 21;
+const int _glassOriginX = 6;
+const int _glassOriginY = 7;
+const int _glassClipStart = 8; // 8..11: LTRB, GlassLayer-local logical px
+const int _glassEdgeTintStart = 12; // 12..15: uEdgeTint rgba
+const int _glassShadowStart = 16; // 16..19: radius, intensity, offset x, y
+const int _glassBlobsStart = 20;
 
 /// A [BackdropFilter] variant that fills the GlassLayer and writes every
 /// glass uniform at paint time.
@@ -897,9 +902,8 @@ class _RenderGlassBackdrop extends RenderProxyBox {
     // uniform state below.
     shader.setFloat(2, dpr);
     shader.setFloat(3, resolver.count.toDouble());
-    shader.setFloat(4, options.blendRadius);
-    shader.setFloat(5, options.bevelThickness);
-    shader.setFloat(6, options.refractionIntensity);
+    shader.setFloat(4, options.bevelThickness);
+    shader.setFloat(5, options.refractionIntensity);
     shader.setFloat(_glassOriginX, globalTopLeft.dx);
     shader.setFloat(_glassOriginY, globalTopLeft.dy);
     // uClip: the effective clip in GlassLayer-local (== our local)
@@ -1012,11 +1016,10 @@ class _RenderGlassBackdrop extends RenderProxyBox {
 
 // Float uniform indices in child.frag (0 and 1 are uSize, engine-filled).
 const int _childBlobCount = 2;
-const int _childBlendRadius = 3;
-const int _childBevelThickness = 4;
-const int _childRefraction = 5;
-const int _childRegionStart = 6; // 6..9: LTRB, GlassLayer-local logical px
-const int _childBlobsStart = 10;
+const int _childBevelThickness = 3;
+const int _childRefraction = 4;
+const int _childRegionStart = 5; // 5..8: LTRB, GlassLayer-local logical px
+const int _childBlobsStart = 9;
 
 /// Masks and refracts the GlassLayer child in one pass: an ordinary
 /// [ImageFilterLayer] (not a backdrop filter — no render-target flip) whose
@@ -1201,7 +1204,6 @@ class _RenderChildGlassFilter extends RenderProxyBox {
     // uniforms must be written before ui.ImageFilter.shader captures the
     // uniform state below.
     shader.setFloat(_childBlobCount, resolver.count.toDouble());
-    shader.setFloat(_childBlendRadius, options.blendRadius);
     shader.setFloat(_childBevelThickness, options.bevelThickness);
     shader.setFloat(_childRefraction, options.childRefractionIntensity);
     shader.setFloat(_childRegionStart, region.left);

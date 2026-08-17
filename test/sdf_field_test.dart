@@ -9,15 +9,14 @@ Future<ui.Image> _renderBlobs(List<GlassBlob> blobs) async {
   final program = await ui.FragmentProgram.fromAsset('shaders/flat.frag');
   final shader = program.fragmentShader();
   shader.setFloat(0, blobs.length.toDouble());
-  shader.setFloat(1, 4); // blendRadius
-  shader.setFloat(2, 0); // mode: tint fill
-  shader.setFloat(3, 1); // dpr
+  shader.setFloat(1, 0); // mode: tint fill
+  shader.setFloat(2, 1); // dpr
+  shader.setFloat(3, 0);
   shader.setFloat(4, 0);
-  shader.setFloat(5, 0);
-  shader.setFloat(6, 1);
-  final packed = packBlobs(blobs);
+  shader.setFloat(5, 1);
+  final packed = packBlobs(blobs, defaultBlendRadius: 4);
   for (var i = 0; i < packed.length; i++) {
-    shader.setFloat(15 + i, packed[i]);
+    shader.setFloat(14 + i, packed[i]);
   }
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
@@ -53,15 +52,14 @@ void main() {
       ),
     ];
     shader.setFloat(0, blobs.length.toDouble());
-    shader.setFloat(1, 24); // blendRadius
-    shader.setFloat(2, 0); // mode: tint fill
-    shader.setFloat(3, 1); // dpr
-    shader.setFloat(4, 0); // shineIntensity (unused in fill mode)
-    shader.setFloat(5, 0); // shineDirection (unused in fill mode)
-    shader.setFloat(6, 1); // bevelThickness (unused in fill mode)
-    final packed = packBlobs(blobs);
+    shader.setFloat(1, 0); // mode: tint fill
+    shader.setFloat(2, 1); // dpr
+    shader.setFloat(3, 0); // shineIntensity (unused in fill mode)
+    shader.setFloat(4, 0); // shineDirection (unused in fill mode)
+    shader.setFloat(5, 1); // bevelThickness (unused in fill mode)
+    final packed = packBlobs(blobs, defaultBlendRadius: 24);
     for (var i = 0; i < packed.length; i++) {
-      shader.setFloat(15 + i, packed[i]);
+      shader.setFloat(14 + i, packed[i]);
     }
 
     final recorder = ui.PictureRecorder();
@@ -102,15 +100,14 @@ void main() {
     Future<Uint8List> render(List<GlassBlob> blobs) async {
       final shader = program.fragmentShader();
       shader.setFloat(0, blobs.length.toDouble());
-      shader.setFloat(1, blend);
-      shader.setFloat(2, 0); // mode: tint fill
-      shader.setFloat(3, 1); // dpr
-      shader.setFloat(4, 0); // shineIntensity (unused in fill mode)
-      shader.setFloat(5, 0); // shineDirection (unused in fill mode)
-      shader.setFloat(6, 1); // bevelThickness (unused in fill mode)
-      final packed = packBlobs(blobs);
+      shader.setFloat(1, 0); // mode: tint fill
+      shader.setFloat(2, 1); // dpr
+      shader.setFloat(3, 0); // shineIntensity (unused in fill mode)
+      shader.setFloat(4, 0); // shineDirection (unused in fill mode)
+      shader.setFloat(5, 1); // bevelThickness (unused in fill mode)
+      final packed = packBlobs(blobs, defaultBlendRadius: blend);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(15 + i, packed[i]);
+        shader.setFloat(14 + i, packed[i]);
       }
       final recorder = ui.PictureRecorder();
       ui.Canvas(recorder).drawRect(
@@ -395,21 +392,20 @@ void main() {
       shader.setFloat(1, h.toDouble());
       shader.setFloat(2, 1); // uDpr
       shader.setFloat(3, blobs.length.toDouble());
-      shader.setFloat(4, 4); // uBlendRadius
-      shader.setFloat(5, 17); // uBevelThickness
-      shader.setFloat(6, 0); // uRefraction
-      shader.setFloat(7, 0); // uOrigin
-      shader.setFloat(8, 0);
-      shader.setFloat(9, 0); // uClip: whole canvas
-      shader.setFloat(10, 0);
-      shader.setFloat(11, w.toDouble());
-      shader.setFloat(12, h.toDouble());
+      shader.setFloat(4, 17); // uBevelThickness
+      shader.setFloat(5, 0); // uRefraction
+      shader.setFloat(6, 0); // uOrigin
+      shader.setFloat(7, 0);
+      shader.setFloat(8, 0); // uClip: whole canvas
+      shader.setFloat(9, 0);
+      shader.setFloat(10, w.toDouble());
+      shader.setFloat(11, h.toDouble());
       for (var i = 0; i < 4; i++) {
-        shader.setFloat(13 + i, 0); // uEdgeTint: disabled
+        shader.setFloat(12 + i, 0); // uEdgeTint: disabled
       }
-      final packed = packBlobs(blobs);
+      final packed = packBlobs(blobs, defaultBlendRadius: 4);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(21 + i, packed[i]);
+        shader.setFloat(20 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();
@@ -500,4 +496,115 @@ void main() {
     expect(anyDiffer, isTrue,
         reason: 'corner region should visibly differ between styles');
   });
+
+  group('per-blob blendRadius', () {
+    // Two circles with a 4px gap between their surfaces, at a layer default
+    // wide enough to bridge it.
+    const left = GlassBlob(
+      center: ui.Offset(70, 100),
+      radii: ui.Size(30, 30),
+      tint: ui.Color(0xFF4FC3F7),
+    );
+    const right = GlassBlob(
+      center: ui.Offset(134, 100),
+      radii: ui.Size(30, 30),
+      tint: ui.Color(0xFF4FC3F7),
+    );
+
+    Future<ByteData> render(List<GlassBlob> blobs) async {
+      final program = await ui.FragmentProgram.fromAsset('shaders/flat.frag');
+      final shader = program.fragmentShader();
+      shader.setFloat(0, blobs.length.toDouble());
+      shader.setFloat(1, 0); // mode: tint fill
+      shader.setFloat(2, 1); // dpr
+      shader.setFloat(3, 0);
+      shader.setFloat(4, 0);
+      shader.setFloat(5, 1);
+      final packed = packBlobs(blobs, defaultBlendRadius: 24);
+      for (var i = 0; i < packed.length; i++) {
+        shader.setFloat(14 + i, packed[i]);
+      }
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawRect(
+        const ui.Rect.fromLTWH(0, 0, 200, 200),
+        ui.Paint()..shader = shader,
+      );
+      final image = await recorder.endRecording().toImage(200, 200);
+      return (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    }
+
+    // Midway between the two surfaces: covered only by the merge bridge.
+    int bridge(ByteData bytes) => _alphaAt(bytes, 102, 100, 200);
+
+    test('null takes the layer default, and 0 opts a blob out of merging',
+        () async {
+      expect(bridge(await render([left, right])), 255,
+          reason: 'both on the layer default should fuse across the gap');
+
+      // The junction merges over min(k) of its two blobs, so *either* one
+      // going crisp is enough to break the bridge.
+      expect(bridge(await render([left.crisp, right])), 0);
+      expect(bridge(await render([left, right.crisp])), 0);
+    });
+
+    test('a raised radius is still capped by its neighbor', () async {
+      // Not a request for more goo: the neighbor is on the default, so the
+      // junction stays exactly the default's.
+      final raised = await render([left.blend(200), right]);
+      final plain = await render([left, right]);
+      for (var i = 0; i < plain.lengthInBytes; i++) {
+        expect(raised.getUint8(i), plain.getUint8(i),
+            reason: 'byte $i should be unchanged by the raised radius');
+      }
+    });
+
+    test('the junction width does not depend on blob order', () async {
+      // The fold is sequential, so a rule that merged each blob at its own
+      // radius would put a *bridge* in one of these two lists and not the
+      // other. min() is symmetric, so both stay crisp.
+      final forward = await render([left.crisp, right]);
+      final reverse = await render([right, left.crisp]);
+      expect(bridge(forward), 0);
+      expect(bridge(reverse), 0);
+
+      // What order does still cost is a rounding residue: smin() is
+      // commutative in exact arithmetic but mix(a, b, h) and mix(b, a, 1 - h)
+      // are not the same float, so AA pixels can land one step apart. (With
+      // three surfaces inside one blend band there is a real, if small,
+      // difference on top of that: the polynomial smin is not associative —
+      // which predates per-blob radii and applies to a single global one just
+      // as much.)
+      var worst = 0;
+      for (var i = 0; i < forward.lengthInBytes; i++) {
+        final d = (reverse.getUint8(i) - forward.getUint8(i)).abs();
+        if (d > worst) worst = d;
+      }
+      expect(worst, lessThanOrEqualTo(1));
+    });
+
+    test('a crisp blob does not sharpen junctions it is not part of',
+        () async {
+      // The accumulator carries the *locally* dominant blob's radius, so a
+      // crisp blob far away leaves this pair alone.
+      const far = GlassBlob(
+        center: ui.Offset(20, 20),
+        radii: ui.Size(10, 10),
+        tint: ui.Color(0xFF4FC3F7),
+        blendRadius: 0,
+      );
+      expect(bridge(await render([far, left, right])), 255);
+      expect(bridge(await render([left, far, right])), 255);
+    });
+  });
+}
+
+extension on GlassBlob {
+  GlassBlob get crisp => blend(0);
+
+  GlassBlob blend(double radius) => GlassBlob(
+        center: center,
+        radii: radii,
+        tint: tint,
+        blendRadius: radius,
+      );
 }

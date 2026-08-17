@@ -34,15 +34,16 @@ const double _tau = math.pi * 2;
 /// Shrinking [radii] to zero does **not** remove a blob's influence: its
 /// distance field degenerates to "distance to [center]", which still crosses
 /// zero there — leaving a ~1px half-coverage dot, a shine speck, and a
-/// smooth-min bulge on any neighbor surface within the layer's blend radius.
+/// smooth-min bulge on any neighbor surface within its blend radius.
 /// Deleting the blob from the list at that point pops those off in one frame.
 ///
 /// For a continuous exit, keep animating the radii *past zero into negatives*
 /// (e.g. `Size.square(-lift)`): a negative radius lifts the whole field
 /// uniformly by `-min(radii)`, fading every effect out smoothly. The
 /// smooth-min has compact support, so once `min(radii) <= -(blendRadius + 2)`
-/// the blob has exactly zero influence and can be dropped from the list with
-/// no visual change.
+/// (this blob's own [blendRadius], since a junction never merges over more
+/// than that) the blob has exactly zero influence and can be dropped from the
+/// list with no visual change.
 ///
 /// The exit lift is designed for plain (hole-less, full-sweep) blobs; a ring
 /// segment's capped-arc field does not reduce to the point field at zero
@@ -86,6 +87,7 @@ class GlassBlob {
     this.endAngle = _tau,
     this.distortion = 0,
     this.distortionRange = 0,
+    this.blendRadius,
   }) : assert(distortion == 0 || distortionRange > 0,
             'A distortion blob needs a positive distortionRange');
 
@@ -97,7 +99,8 @@ class GlassBlob {
   /// length of `(p2 - p1).distance + thickness` and a height of [thickness].
   /// When `p1 == p2` this is a circle of diameter [thickness].
   ///
-  /// [cornerContinuity] selects the cap curvature; the remaining parameters
+  /// [cornerContinuity] selects the cap curvature, [blendRadius] and the
+  /// [distortion] pair forward as-is, and the remaining parameters
   /// ([holeRadius], [startAngle], [endAngle]) forward to the default
   /// constructor for the rare case of clipping a line into a ring segment.
   factory GlassBlob.line(
@@ -111,6 +114,7 @@ class GlassBlob {
     double endAngle = _tau,
     double distortion = 0,
     double distortionRange = 0,
+    double? blendRadius,
   }) {
     final Offset delta = p2 - p1;
     final double length = delta.distance;
@@ -125,6 +129,7 @@ class GlassBlob {
       endAngle: endAngle,
       distortion: distortion,
       distortionRange: distortionRange,
+      blendRadius: blendRadius,
     );
   }
 
@@ -204,6 +209,25 @@ class GlassBlob {
   /// meaningless (and ignored) otherwise.
   final double distortionRange;
 
+  /// How far away this blob starts fusing with its neighbors, in logical
+  /// pixels; `null` (the default) takes the layer's
+  /// [GlassOptions.blendRadius].
+  ///
+  /// Two blobs fuse over the **smaller** of their two radii, so this is a
+  /// limit rather than a request: `0` keeps this blob's silhouette crisp
+  /// against every neighbor no matter how gooey the layer is, while raising
+  /// it above the layer default only has an effect where the blob on the
+  /// other side of the junction was raised too. Which blob is crisp does not
+  /// leak: junctions elsewhere in the layer keep their own widths.
+  ///
+  /// It is animatable, and it is also what bounds the blob's reach — a blob
+  /// can never bulge a neighbor from further away than this, which is what
+  /// makes the exit lift above (and the layer's bounds padding) exact.
+  ///
+  /// Ignored on a distortion blob: a distorter is excluded from the merge, so
+  /// it has no junctions. Its reach is [distortionRange] instead.
+  final double? blendRadius;
+
   @override
   bool operator ==(Object other) {
     return other is GlassBlob &&
@@ -217,7 +241,8 @@ class GlassBlob {
         other.startAngle == startAngle &&
         other.endAngle == endAngle &&
         other.distortion == distortion &&
-        other.distortionRange == distortionRange;
+        other.distortionRange == distortionRange &&
+        other.blendRadius == blendRadius;
   }
 
   @override
@@ -233,5 +258,6 @@ class GlassBlob {
     endAngle,
     distortion,
     distortionRange,
+    blendRadius,
   );
 }

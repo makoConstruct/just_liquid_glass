@@ -1,3 +1,15 @@
+# 0.8.0
+- Per-blob blend radius (`GlassBlob.blendRadius`, null to take
+  `GlassOptions.blendRadius` as before). A junction fuses over the *smaller*
+  of its two blobs' radii, so `blendRadius: 0` keeps one blob crisp against
+  every neighbour without touching the rest of the layer, and raising one
+  above the layer default only bites where the blob on the other side was
+  raised too. The shader no longer has a global blend-radius uniform at all:
+  it rides in a slot the packed blob layout had spare, and the fold carries
+  the locally dominant blob's radius alongside the distance, so a crisp blob
+  at one end of a layer does not sharpen junctions at the other. Layers that
+  never set it render bit-identically to before.
+
 # 0.7.0
 - Drop shadows, on by default (`GlassOptions.shadowRadius`,
   `shadowIntensity`, `shadowOffset`; `shadowIntensity: 0` restores the old

@@ -112,26 +112,26 @@ void main() {
         await blurBackdrop(backdrop, options.blurRadius / 2),
       );
       shader.setFloat(3, blobs.length.toDouble());
-      shader.setFloat(4, options.blendRadius);
-      shader.setFloat(5, options.bevelThickness);
-      shader.setFloat(6, options.refractionIntensity);
-      shader.setFloat(7, 0); // uOrigin: canvas at the render-target origin
-      shader.setFloat(8, 0);
-      shader.setFloat(9, 0); // uClip: whole canvas
-      shader.setFloat(10, 0);
-      shader.setFloat(11, width);
-      shader.setFloat(12, height);
-      shader.setFloat(13, options.edgeTint.r); // uEdgeTint
-      shader.setFloat(14, options.edgeTint.g);
-      shader.setFloat(15, options.edgeTint.b);
-      shader.setFloat(16, options.edgeTint.a);
-      shader.setFloat(17, options.shadowRadius); // uShadow
-      shader.setFloat(18, options.shadowIntensity);
-      shader.setFloat(19, options.shadowOffset.dx);
-      shader.setFloat(20, options.shadowOffset.dy);
-      final packed = packBlobs(blobs);
+      shader.setFloat(4, options.bevelThickness);
+      shader.setFloat(5, options.refractionIntensity);
+      shader.setFloat(6, 0); // uOrigin: canvas at the render-target origin
+      shader.setFloat(7, 0);
+      shader.setFloat(8, 0); // uClip: whole canvas
+      shader.setFloat(9, 0);
+      shader.setFloat(10, width);
+      shader.setFloat(11, height);
+      shader.setFloat(12, options.edgeTint.r); // uEdgeTint
+      shader.setFloat(13, options.edgeTint.g);
+      shader.setFloat(14, options.edgeTint.b);
+      shader.setFloat(15, options.edgeTint.a);
+      shader.setFloat(16, options.shadowRadius); // uShadow
+      shader.setFloat(17, options.shadowIntensity);
+      shader.setFloat(18, options.shadowOffset.dx);
+      shader.setFloat(19, options.shadowOffset.dy);
+      final packed =
+          packBlobs(blobs, defaultBlendRadius: options.blendRadius);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(21 + i, packed[i]);
+        shader.setFloat(20 + i, packed[i]);
       }
 
       // The shine is a separate pass drawn topmost, outside the GlassLayer
@@ -143,14 +143,13 @@ void main() {
       );
       final shine = flatProgram.fragmentShader();
       shine.setFloat(0, blobs.length.toDouble());
-      shine.setFloat(1, options.blendRadius);
-      shine.setFloat(2, 2); // mode: shine
-      shine.setFloat(3, 1); // dpr
-      shine.setFloat(4, options.shineIntensity);
-      shine.setFloat(5, options.shineDirection);
-      shine.setFloat(6, options.bevelThickness);
+      shine.setFloat(1, 2); // mode: shine
+      shine.setFloat(2, 1); // dpr
+      shine.setFloat(3, options.shineIntensity);
+      shine.setFloat(4, options.shineDirection);
+      shine.setFloat(5, options.bevelThickness);
       for (var i = 0; i < packed.length; i++) {
-        shine.setFloat(15 + i, packed[i]);
+        shine.setFloat(14 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();
@@ -183,30 +182,29 @@ void main() {
         shader.setFloat(1, height);
         shader.setFloat(2, 1.0); // uDpr
         shader.setFloat(3, 1); // uBlobCount
-        shader.setFloat(4, 30); // uBlendRadius
-        shader.setFloat(5, 18); // uBevelThickness
-        shader.setFloat(6, 30); // uRefraction
-        shader.setFloat(7, uOrigin.dx);
-        shader.setFloat(8, uOrigin.dy);
+        shader.setFloat(4, 18); // uBevelThickness
+        shader.setFloat(5, 30); // uRefraction
+        shader.setFloat(6, uOrigin.dx);
+        shader.setFloat(7, uOrigin.dy);
         // uClip is GlassLayer-local like the blob centers: the whole canvas
         // shifted by the origin, so both renders clamp to the same global rect.
-        shader.setFloat(9, -uOrigin.dx);
-        shader.setFloat(10, -uOrigin.dy);
-        shader.setFloat(11, width - uOrigin.dx);
-        shader.setFloat(12, height - uOrigin.dy);
-        shader.setFloat(13, 0); // uEdgeTint: black at default strength
+        shader.setFloat(8, -uOrigin.dx);
+        shader.setFloat(9, -uOrigin.dy);
+        shader.setFloat(10, width - uOrigin.dx);
+        shader.setFloat(11, height - uOrigin.dy);
+        shader.setFloat(12, 0); // uEdgeTint: black at default strength
+        shader.setFloat(13, 0);
         shader.setFloat(14, 0);
-        shader.setFloat(15, 0);
-        shader.setFloat(16, 0.15);
+        shader.setFloat(15, 0.15);
         final packed = packBlobs([
           GlassBlob(
             center: center,
             radii: const ui.Size(70, 70),
             tint: const ui.Color(0xB3FFFFFF),
           ),
-        ]);
+        ], defaultBlendRadius: 30);
         for (var i = 0; i < packed.length; i++) {
-          shader.setFloat(21 + i, packed[i]);
+          shader.setFloat(20 + i, packed[i]);
         }
         final recorder = ui.PictureRecorder();
         ui.Canvas(recorder).drawRect(

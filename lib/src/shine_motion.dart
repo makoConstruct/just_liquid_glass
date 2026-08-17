@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
@@ -19,10 +20,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 /// shrinks below [minPlanarAcceleration] and the angle becomes noise, so the
 /// last confident tilt is held instead.
 class ShineTiltFilter {
-  ShineTiltFilter({
-    this.timeConstant = 0.15,
-    this.minPlanarAcceleration = 0.8,
-  });
+  ShineTiltFilter({this.timeConstant = 0.15, this.minPlanarAcceleration = 0.8});
 
   /// Exponential smoothing time constant, in seconds.
   final double timeConstant;
@@ -53,8 +51,7 @@ class ShineTiltFilter {
       _y = y;
       _primed = true;
     }
-    if (_x * _x + _y * _y >=
-        minPlanarAcceleration * minPlanarAcceleration) {
+    if (_x * _x + _y * _y >= minPlanarAcceleration * minPlanarAcceleration) {
       _tilt = math.atan2(-_x, _y);
     }
     return _tilt;
@@ -91,6 +88,15 @@ class ShineMotion with WidgetsBindingObserver {
   DateTime? _lastTimestamp;
   bool _failed = false;
   bool _observing = false;
+
+  /// sensors_plus is implemented for android, ios and web only. Asking it for
+  /// a stream anywhere else fails out of band — the sampling-period call it
+  /// makes is an unawaited `invokeMethod`, so the MissingPluginException lands
+  /// in the zone rather than in [_listen]'s hands — hence asking first.
+  static bool get _sensorExists =>
+      kIsWeb ||
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
 
   /// Whether the sensor subscription is currently live.
   @visibleForTesting
@@ -137,16 +143,20 @@ class ShineMotion with WidgetsBindingObserver {
 
   void _listen() {
     if (_failed || _subscription != null || _refCount == 0) return;
+    if (debugEventStream == null && !_sensorExists) {
+      _failed = true;
+      return;
+    }
     _filter = ShineTiltFilter();
     _lastTimestamp = null;
     try {
-      final stream = debugEventStream ??
-          accelerometerEventStream(
-              samplingPeriod: SensorInterval.gameInterval);
+      final stream =
+          debugEventStream ??
+          accelerometerEventStream(samplingPeriod: SensorInterval.gameInterval);
       _subscription = stream.listen(
         _onEvent,
-        // No accelerometer (desktop, some emulators, web without permission):
-        // stay static forever rather than retrying.
+        // No accelerometer (some emulators, web without permission): stay
+        // static forever rather than retrying.
         onError: (Object _) {
           _failed = true;
           _cancel();

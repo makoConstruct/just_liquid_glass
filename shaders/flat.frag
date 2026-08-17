@@ -27,24 +27,24 @@ precision highp float;
 
 // Set from Dart; float uniform indices start at 0.
 uniform float uBlobCount;      // 0
-uniform float uBlendRadius;    // 1
-uniform float uMode;           // 2 (0 = fill, 1 = mask, 2 = shine, 3 = opaque)
-uniform float uDpr;            // 3
-uniform float uShineIntensity; // 4 (shine mode only)
-uniform float uShineDirection; // 5 (shine mode only)
-uniform float uBevelThickness; // 6 (shine and opaque modes)
+uniform float uMode;           // 1 (0 = fill, 1 = mask, 2 = shine, 3 = opaque)
+uniform float uDpr;            // 2
+uniform float uShineIntensity; // 3 (shine mode only)
+uniform float uShineDirection; // 4 (shine mode only)
+uniform float uBevelThickness; // 5 (shine and opaque modes)
+// (the smooth-min blend radius is per blob; see uBlobs[i * 6 + 4].w)
 
 // Rim darkening across the bevel band; opaque-fill mode only, where it
 // stands in for glass.frag's uEdgeTint. Same meaning, same weighting.
-uniform vec4 uEdgeTint;        // 7..10
+uniform vec4 uEdgeTint;        // 6..9
 
 // Drop shadow: (blur radius, peak alpha, offset.x, offset.y) in logical
 // pixels; see glass.frag. Drawn by the two modes that stand in for the glass
 // pass — fill and opaque fill — and by neither of the two that draw *over*
 // it (the child mask and the shine).
-uniform vec4 uShadow;          // 11..14
+uniform vec4 uShadow;          // 10..13
 
-// 6 vec4 per blob, up to 16 blobs (float indices 15..398).
+// 6 vec4 per blob, up to 16 blobs (float indices 14..397).
 // Layout identical to glass.frag.
 uniform vec4 uBlobs[96];
 
@@ -142,11 +142,13 @@ float sdBlob(vec2 p, vec4 a, vec4 b, vec4 c, float squircle, vec4 se) {
 
 // Distortion blobs (extra.y != 0) run the exact same loop body as rendered
 // blobs; see the matching comment in glass.frag for how the lifted merge
-// distance and the subtracted bump work.
+// distance and the subtracted bump work — and, just below it, for why the
+// per-blob blend radius (extra.w) folds in as min(kAcc, k_i) with kAcc
+// carried through h.
 
 float sceneD(vec2 p) {
-  float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float kAcc = 1e4;
   float bump = 0.0;
   for (int i = 0; i < 16; i++) {
     if (float(i) < uBlobCount) {
@@ -154,8 +156,10 @@ float sceneD(vec2 p) {
       float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
           uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
+      float k = max(min(kAcc, extra.w), 1e-4);
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
+      kAcc += (extra.w - kAcc) * h;
       float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
       bump += extra.y * (t * t * (3.0 - 2.0 * t));
     }
@@ -164,8 +168,8 @@ float sceneD(vec2 p) {
 }
 
 float scene(vec2 p, out vec4 tint) {
-  float k = max(uBlendRadius, 1e-4);
   float d = 1e4; // sentinel kept small: mix() at 1e9 quantizes to f32 ulp of 64
+  float kAcc = 1e4;
   float bump = 0.0;
   tint = vec4(0.0);
   for (int i = 0; i < 16; i++) {
@@ -174,8 +178,10 @@ float scene(vec2 p, out vec4 tint) {
       float di = sdBlob(p, uBlobs[i * 6], uBlobs[i * 6 + 1],
           uBlobs[i * 6 + 2], extra.x, uBlobs[i * 6 + 5]);
       float dm = extra.y == 0.0 ? di : 4e4;
+      float k = max(min(kAcc, extra.w), 1e-4);
       float h = clamp(0.5 + 0.5 * (d - dm) / k, 0.0, 1.0);
       d = mix(d, dm, h) - k * h * (1.0 - h);
+      kAcc += (extra.w - kAcc) * h;
       float t = clamp(1.0 - di / max(extra.z, 1e-4), 0.0, 1.0);
       float s = t * t * (3.0 - 2.0 * t);
       bump += extra.y * s;

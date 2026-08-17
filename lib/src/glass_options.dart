@@ -69,6 +69,12 @@ class GlassOptions {
 
   /// Smooth-min merge radius: how far apart blobs start visually fusing,
   /// in logical pixels. Larger values are blobbier.
+  ///
+  /// This is the default for blobs that leave [GlassBlob.blendRadius] null,
+  /// which is all of them unless you say otherwise. A blob that sets its own
+  /// overrides it, and a junction between two blobs uses the smaller of their
+  /// two radii — so one blob can opt out of merging without the layer's other
+  /// junctions changing.
   final double blendRadius;
 
   /// Color layered over the blob tints across the bevel band, deepening

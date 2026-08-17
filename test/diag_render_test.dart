@@ -70,36 +70,34 @@ void main() {
         ),
       ];
       shader.setFloat(3, blobs.length.toDouble());
-      shader.setFloat(4, 40); // blendRadius
-      shader.setFloat(5, 16); // bevelThickness
-      shader.setFloat(6, 26); // refractionIntensity
-      shader.setFloat(7, 0); // uOrigin: canvas at the render-target origin
-      shader.setFloat(8, 0);
-      shader.setFloat(9, 0); // uClip: whole canvas
-      shader.setFloat(10, 0);
-      shader.setFloat(11, width);
-      shader.setFloat(12, height);
-      shader.setFloat(13, 0); // uEdgeTint: black at default strength
+      shader.setFloat(4, 16); // bevelThickness
+      shader.setFloat(5, 26); // refractionIntensity
+      shader.setFloat(6, 0); // uOrigin: canvas at the render-target origin
+      shader.setFloat(7, 0);
+      shader.setFloat(8, 0); // uClip: whole canvas
+      shader.setFloat(9, 0);
+      shader.setFloat(10, width);
+      shader.setFloat(11, height);
+      shader.setFloat(12, 0); // uEdgeTint: black at default strength
+      shader.setFloat(13, 0);
       shader.setFloat(14, 0);
-      shader.setFloat(15, 0);
-      shader.setFloat(16, 0.15);
-      final packed = packBlobs(blobs);
+      shader.setFloat(15, 0.15);
+      final packed = packBlobs(blobs, defaultBlendRadius: 40);
       for (var i = 0; i < packed.length; i++) {
-        shader.setFloat(21 + i, packed[i]);
+        shader.setFloat(20 + i, packed[i]);
       }
 
       final flatProgram =
           await ui.FragmentProgram.fromAsset('shaders/flat.frag');
       final shine = flatProgram.fragmentShader();
       shine.setFloat(0, blobs.length.toDouble());
-      shine.setFloat(1, 40); // blendRadius
-      shine.setFloat(2, 2); // mode: shine
-      shine.setFloat(3, 1); // dpr
-      shine.setFloat(4, 0.5); // shineIntensity
-      shine.setFloat(5, math.pi / 2); // shineDirection
-      shine.setFloat(6, 16); // bevelThickness
+      shine.setFloat(1, 2); // mode: shine
+      shine.setFloat(2, 1); // dpr
+      shine.setFloat(3, 0.5); // shineIntensity
+      shine.setFloat(4, math.pi / 2); // shineDirection
+      shine.setFloat(5, 16); // bevelThickness
       for (var i = 0; i < packed.length; i++) {
-        shine.setFloat(15 + i, packed[i]);
+        shine.setFloat(14 + i, packed[i]);
       }
 
       final recorder = ui.PictureRecorder();
